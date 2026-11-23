@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type {
   AdminNotification,
+  AdminPermission,
   AuditLogEntry,
   BirthdayCampaign,
   CustomerRecord,
@@ -27,6 +28,7 @@ import type {
   Product,
   StoreSettings,
 } from '../../shared/types.ts';
+import { apiUrl } from '../../lib/api.ts';
 import { formatIqd } from '../../shared/pricing.ts';
 import { STATUS_LABELS } from '../../i18n/translations.ts';
 import { AdminAuthGate } from './AdminAuthGate.tsx';
@@ -53,6 +55,7 @@ type AdminTab =
 
 interface AdminDashboardPayload {
   adminRole?: 'owner' | 'manager';
+  permissions?: AdminPermission[];
   kpis: {
     totalOrders: number;
     todayOrders: number;
@@ -104,6 +107,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminUsername, setAdminUsername] = useState<string>('');
   const [adminRole, setAdminRole] = useState<'owner' | 'manager'>('owner');
+  const [adminPermissions, setAdminPermissions] = useState<AdminPermission[]>([
+    'orders',
+    'products',
+    'loyalty',
+    'customers',
+    'notifications',
+  ]);
   const [expiresAt, setExpiresAt] = useState<string>('');
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [data, setData] = useState<AdminDashboardPayload | null>(null);
@@ -123,7 +133,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     if (!adminToken) return;
     setLoading(true);
     try {
-      const resp = await fetch('/api/admin/dashboard', {
+      const resp = await fetch(apiUrl('/api/admin/dashboard'), {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       if (resp.status === 401 || resp.status === 403) {
@@ -136,6 +146,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         setData(json);
         if (json.adminRole) {
           setAdminRole(json.adminRole);
+        }
+        if (Array.isArray(json.permissions)) {
+          setAdminPermissions(json.permissions);
         }
       }
     } finally {
@@ -157,7 +170,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // SSE Real-time new order stream
   useEffect(() => {
     if (!adminToken) return;
-    const es = new EventSource(`/api/admin/events?token=${encodeURIComponent(adminToken)}`);
+    const es = new EventSource(
+      apiUrl(`/api/admin/events?token=${encodeURIComponent(adminToken)}`)
+    );
     es.addEventListener('new_order', (evt) => {
       try {
         const parsed = JSON.parse((evt as MessageEvent).data) as {
@@ -213,7 +228,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setExpiresAt('');
     if (tokenToRevoke) {
       try {
-        await fetch('/api/admin/logout', {
+        await fetch(apiUrl('/api/admin/logout'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${tokenToRevoke}` },
         });
@@ -266,10 +281,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <AdminAuthGate
           lang={lang}
           showReturnToStore={!isAdminSubdomain}
-          onAuthenticated={(token, username, role, exp) => {
+          onAuthenticated={(token, username, role, exp, perms) => {
             setAdminToken(token);
             setAdminUsername(username);
             setAdminRole(role || 'owner');
+            setAdminPermissions(
+              perms || ['orders', 'products', 'loyalty', 'customers', 'notifications']
+            );
             setExpiresAt(exp || '');
             setActiveTab('overview');
           }}
@@ -283,7 +301,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleChangeOrderStatus = async (orderId: string, status: OrderStatus) => {
     setActionMsg('');
-    const resp = await fetch(`/api/admin/orders/${orderId}/status`, {
+    const resp = await fetch(apiUrl(`/api/admin/orders/${orderId}/status`), {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -299,7 +317,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const handleQuickAwardStamp = async (orderId: string) => {
     setActionMsg('');
-    const resp = await fetch('/api/admin/loyalty/award-stamp', {
+    const resp = await fetch(apiUrl('/api/admin/loyalty/award-stamp'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -320,24 +338,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     );
   };
 
+  const hasPerm = (perm: AdminPermission) =>
+    adminRole === 'owner' || adminPermissions.includes(perm);
+
   const allTabs: Array<{
     id: AdminTab;
     labelAr: string;
     labelEn: string;
     icon: React.ReactNode;
     ownerOnly?: boolean;
+    requiredPermission?: AdminPermission;
   }> = [
     { id: 'overview', labelAr: 'نظرة عامة', labelEn: 'Overview', icon: <LayoutDashboard className="w-4 h-4" /> },
-    { id: 'orders', labelAr: 'الطلبات', labelEn: 'Orders', icon: <ShoppingBag className="w-4 h-4" /> },
-    { id: 'products', labelAr: 'المنتجات والأسعار', labelEn: 'Products & Prices', icon: <Package className="w-4 h-4" /> },
-    { id: 'loyalty', labelAr: 'الولاء والأختام', labelEn: 'Loyalty', icon: <Award className="w-4 h-4" /> },
-    { id: 'customers', labelAr: 'العملاء والميلاد', labelEn: 'Customers & Birthdays', icon: <Users className="w-4 h-4" /> },
-    { id: 'notifications', labelAr: 'الإشعارات والقرب', labelEn: 'Notifications', icon: <Bell className="w-4 h-4" /> },
+    { id: 'orders', labelAr: 'الطلبات', labelEn: 'Orders', icon: <ShoppingBag className="w-4 h-4" />, requiredPermission: 'orders' },
+    { id: 'products', labelAr: 'المنتجات والأسعار', labelEn: 'Products & Prices', icon: <Package className="w-4 h-4" />, requiredPermission: 'products' },
+    { id: 'loyalty', labelAr: 'الولاء والأختام', labelEn: 'Loyalty', icon: <Award className="w-4 h-4" />, requiredPermission: 'loyalty' },
+    { id: 'customers', labelAr: 'العملاء والميلاد', labelEn: 'Customers & Birthdays', icon: <Users className="w-4 h-4" />, requiredPermission: 'customers' },
+    { id: 'notifications', labelAr: 'الإشعارات والقرب', labelEn: 'Notifications', icon: <Bell className="w-4 h-4" />, requiredPermission: 'notifications' },
     { id: 'settings', labelAr: 'المتجر والخريطة و QR', labelEn: 'Store, Maps & QR', icon: <Settings className="w-4 h-4" />, ownerOnly: true },
     { id: 'security', labelAr: 'الأمان والصلاحيات', labelEn: 'Security & Access', icon: <KeyRound className="w-4 h-4" /> },
     { id: 'audit', labelAr: 'سجل التدقيق', labelEn: 'Audit Logs', icon: <Shield className="w-4 h-4" />, ownerOnly: true },
   ];
-  const tabs = allTabs.filter((t) => !t.ownerOnly || adminRole === 'owner');
+  const tabs = allTabs.filter(
+    (t) =>
+      (!t.ownerOnly || adminRole === 'owner') &&
+      (!t.requiredPermission || hasPerm(t.requiredPermission))
+  );
 
   return (
     <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 text-white">
@@ -698,7 +724,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               ))}
                             </select>
 
-                            {!ord.stampAwarded && ord.status !== 'Cancelled' ? (
+                            {hasPerm('loyalty') && !ord.stampAwarded && ord.status === 'Completed' ? (
                               <button
                                 type="button"
                                 onClick={() => handleQuickAwardStamp(ord.id)}
@@ -706,6 +732,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               >
                                 {lang === 'ar' ? 'منح ختم الولاء (+1)' : 'Approve +1 Stamp'}
                               </button>
+                            ) : hasPerm('loyalty') && !ord.stampAwarded && ord.status !== 'Cancelled' ? (
+                              <span className="text-white/65">
+                                {lang === 'ar' ? 'أكمل الطلب لمنح الختم' : 'Complete order to award stamp'}
+                              </span>
                             ) : ord.stampAwarded ? (
                               <span className="text-[#F8BBD0] font-semibold">
                                 {lang === 'ar' ? '✓ تم منح الختم' : '✓ Stamp Awarded'}

@@ -28,7 +28,7 @@ export const CustomBouquetBuilder: React.FC<CustomBouquetBuilderProps> = ({
   const t = UI_COPY[lang];
 
   const flowerTypes = useMemo(
-    () => options.filter((o) => o.group === 'flower_type' && o.isAvailable),
+    () => options.filter((o) => o.group === 'flower_type' && o.isAvailable && o.stock > 0),
     [options]
   );
   const flowerColors = useMemo(
@@ -69,8 +69,15 @@ export const CustomBouquetBuilder: React.FC<CustomBouquetBuilderProps> = ({
     ? arrangementId
     : arrangements[0]?.id || '';
 
+  const selectedFlowerTypeObj = flowerTypes.find((f) => f.id === activeFlowerTypeId);
+  const maxStock = selectedFlowerTypeObj
+    ? Math.min(settings.maxCustomRoses || 100, selectedFlowerTypeObj.stock)
+    : flowerTypes.length > 0
+      ? settings.maxCustomRoses || 100
+      : 0;
+
   const selection: CustomBouquetSelection = {
-    roseQuantity: Math.max(1, Math.min(settings.maxCustomRoses || 100, roseQuantity || 1)),
+    roseQuantity: Math.max(1, Math.min(maxStock > 0 ? maxStock : settings.maxCustomRoses || 100, roseQuantity || 1)),
     flowerTypeId: activeFlowerTypeId,
     colorIds: colorIds.length > 0 ? colorIds : flowerColors[0]?.id ? [flowerColors[0].id] : [],
     wrappingId: activeWrappingId,
@@ -80,6 +87,7 @@ export const CustomBouquetBuilder: React.FC<CustomBouquetBuilderProps> = ({
   };
 
   const breakdown = useMemo(() => {
+    if (maxStock <= 0 || !activeFlowerTypeId) return null;
     try {
       return calculateCustomBouquetPrice(
         selection,
@@ -90,15 +98,13 @@ export const CustomBouquetBuilder: React.FC<CustomBouquetBuilderProps> = ({
     } catch {
       return null;
     }
-  }, [selection, options, settings.roseUnitPriceIqd, settings.maxCustomRoses]);
+  }, [selection, options, settings.roseUnitPriceIqd, settings.maxCustomRoses, maxStock, activeFlowerTypeId]);
 
   const selectedFlowerType = flowerTypes.find((f) => f.id === selection.flowerTypeId);
   const selectedWrapping = wrappings.find((w) => w.id === selection.wrappingId);
   const selectedArrangement = arrangements.find((a) => a.id === selection.arrangementId);
   const selectedColors = flowerColors.filter((c) => selection.colorIds.includes(c.id));
   const selectedGifts = gifts.filter((g) => selection.giftIds.includes(g.id));
-
-  const maxStock = selectedFlowerType ? Math.min(settings.maxCustomRoses, selectedFlowerType.stock) : settings.maxCustomRoses;
 
   const toggleColor = (id: string) => {
     setColorIds((prev) => {
@@ -114,7 +120,7 @@ export const CustomBouquetBuilder: React.FC<CustomBouquetBuilderProps> = ({
   };
 
   const handleAdd = () => {
-    if (!breakdown) return;
+    if (!breakdown || maxStock <= 0) return;
     onAddCustomBouquet(selection);
     setAddedFeedback(true);
     setTimeout(() => setAddedFeedback(false), 1800);

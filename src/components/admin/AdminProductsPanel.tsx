@@ -17,6 +17,7 @@ import {
   syncProductToFirestore,
   syncSettingsToFirestore,
 } from '../../lib/firestoreCatalogSync.ts';
+import { apiUrl } from '../../lib/api.ts';
 import { SafeImage } from '../SafeImage.tsx';
 
 interface AdminProductsPanelProps {
@@ -106,7 +107,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
     try {
       const form = new FormData();
       form.append('image', file);
-      const resp = await fetch('/api/admin/upload', {
+      const resp = await fetch(apiUrl('/api/admin/upload'), {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
         body: form,
@@ -127,7 +128,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
     setSavingPrice(true);
     setFeedback('');
     try {
-      const resp = await fetch('/api/admin/settings', {
+      const resp = await fetch(apiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -154,7 +155,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
 
   const persistCategories = async (nextCategories: CategoryConfig[], msgAr: string, msgEn: string) => {
     setFeedback('');
-    const resp = await fetch('/api/admin/settings', {
+    const resp = await fetch(apiUrl('/api/admin/settings'), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -216,7 +217,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
 
   const saveProductPayload = async (payload: Record<string, unknown>, msgAr: string, msgEn: string) => {
     setFeedback('');
-    const resp = await fetch('/api/admin/products', {
+    const resp = await fetch(apiUrl('/api/admin/products'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -326,7 +327,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
   };
 
   const handleDeleteProduct = async (id: string) => {
-    const resp = await fetch(`/api/admin/products/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/products/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -339,7 +340,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
 
   const saveOptionPayload = async (payload: Record<string, unknown>, msgAr: string, msgEn: string) => {
     setFeedback('');
-    const resp = await fetch('/api/admin/options', {
+    const resp = await fetch(apiUrl('/api/admin/options'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -420,7 +421,7 @@ export const AdminProductsPanel: React.FC<AdminProductsPanelProps> = ({
   };
 
   const handleDeleteOption = async (id: string) => {
-    const resp = await fetch(`/api/admin/options/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/options/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${adminToken}` },
     });

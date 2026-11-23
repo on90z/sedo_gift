@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Globe, Menu, ShoppingBag, X } from 'lucide-react';
 import type { Language, StoreSettings } from '../shared/types.ts';
 import { UI_COPY } from '../i18n/translations.ts';
+import { resolveMediaUrl } from '../lib/api.ts';
 
 export type ActiveRoute =
   | 'home'
@@ -60,7 +61,7 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {settings.logoUrl ? (
             <img
-              src={settings.logoUrl}
+              src={resolveMediaUrl(settings.logoUrl)}
               alt="SEDO"
               className="h-9 w-auto object-contain"
               referrerPolicy="no-referrer"

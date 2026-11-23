@@ -2,7 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { KeyRound, Lock, ShieldCheck } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../../lib/firebase.ts';
-import type { Language } from '../../shared/types.ts';
+import { apiUrl } from '../../lib/api.ts';
+import type { AdminPermission, Language } from '../../shared/types.ts';
 
 interface AdminAuthGateProps {
   lang: Language;
@@ -11,7 +12,8 @@ interface AdminAuthGateProps {
     token: string,
     username: string,
     adminRole?: 'owner' | 'manager',
-    expiresAt?: string
+    expiresAt?: string,
+    permissions?: AdminPermission[]
   ) => void;
   onBackToStore: () => void;
 }
@@ -55,7 +57,7 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
   const [infoMsg, setInfoMsg] = useState('');
 
   useEffect(() => {
-    fetch('/api/admin/status')
+    fetch(apiUrl('/api/admin/status'))
       .then((r) => r.json())
       .then((data) => {
         setRequiresSetup(Boolean(data.requiresSetup));
@@ -89,7 +91,7 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
     setSubmitting(true);
     try {
       const endpoint = requiresSetup ? '/api/admin/setup' : '/api/admin/login';
-      const resp = await fetch(endpoint, {
+      const resp = await fetch(apiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username.trim(), password }),
@@ -104,7 +106,13 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
         return;
       }
 
-      onAuthenticated(data.token, data.username, data.adminRole || 'owner', data.expiresAt);
+      onAuthenticated(
+        data.token,
+        data.username,
+        data.adminRole || 'owner',
+        data.expiresAt,
+        data.permissions
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
@@ -117,14 +125,20 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
     setErrorMsg('');
     setSubmitting(true);
     try {
-      const resp = await fetch('/api/admin/mfa/verify', {
+      const resp = await fetch(apiUrl('/api/admin/mfa/verify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ challengeToken, code: mfaCode.trim() }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'MFA verification failed');
-      onAuthenticated(data.token, data.username, data.adminRole || 'owner', data.expiresAt);
+      onAuthenticated(
+        data.token,
+        data.username,
+        data.adminRole || 'owner',
+        data.expiresAt,
+        data.permissions
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'MFA verification failed');
     } finally {
@@ -139,14 +153,20 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       const idToken = await cred.user.getIdToken();
-      const resp = await fetch('/api/admin/google-session', {
+      const resp = await fetch(apiUrl('/api/admin/google-session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ idToken }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || 'Google owner authentication failed');
-      onAuthenticated(data.token, data.username, data.adminRole || 'owner', data.expiresAt);
+      onAuthenticated(
+        data.token,
+        data.username,
+        data.adminRole || 'owner',
+        data.expiresAt,
+        data.permissions
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Google sign-in failed');
     } finally {
@@ -178,7 +198,7 @@ export const AdminAuthGate: React.FC<AdminAuthGateProps> = ({
         const cred = await signInWithPopup(auth, googleProvider);
         idToken = await cred.user.getIdToken();
       }
-      const resp = await fetch('/api/admin/reset-password', {
+      const resp = await fetch(apiUrl('/api/admin/reset-password'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

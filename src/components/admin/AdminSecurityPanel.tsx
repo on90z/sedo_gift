@@ -12,12 +12,26 @@ import {
   Trash2,
   UserPlus,
 } from 'lucide-react';
-import type { Language } from '../../shared/types.ts';
+import { apiUrl, sanitizeHttpOrigin } from '../../lib/api.ts';
+import type { AdminPermission, Language } from '../../shared/types.ts';
+
+const PERMISSION_LABELS: Array<{
+  id: AdminPermission;
+  labelAr: string;
+  labelEn: string;
+}> = [
+  { id: 'orders', labelAr: 'الطلبات', labelEn: 'Orders' },
+  { id: 'products', labelAr: 'المنتجات والأسعار', labelEn: 'Products' },
+  { id: 'loyalty', labelAr: 'الولاء والأختام', labelEn: 'Loyalty' },
+  { id: 'customers', labelAr: 'العملاء والميلاد', labelEn: 'Customers' },
+  { id: 'notifications', labelAr: 'الإشعارات والقرب', labelEn: 'Notifications' },
+];
 
 interface TeamUserView {
   id: string;
   username: string;
   role: 'manager';
+  permissions?: AdminPermission[];
   createdBy: string;
   createdAt: string;
 }
@@ -69,19 +83,27 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
   // RBAC Team State
   const [teamUsername, setTeamUsername] = useState('');
   const [teamPassword, setTeamPassword] = useState('');
+  const [teamPermissions, setTeamPermissions] = useState<AdminPermission[]>([
+    'orders',
+    'products',
+    'loyalty',
+  ]);
 
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const isAdminSubdomain =
     typeof window !== 'undefined' && window.location.hostname.toLowerCase().startsWith('admin.');
-  const publicCustomerUrl = isAdminSubdomain
-    ? `${window.location.protocol}//${window.location.hostname.replace(/^admin\./i, 'www.')}${window.location.port ? `:${window.location.port}` : ''}`
-    : `${origin}/`;
+  const envPublicSiteUrl = sanitizeHttpOrigin(import.meta.env.VITE_PUBLIC_SITE_URL as string | undefined);
+  const publicCustomerUrl = envPublicSiteUrl
+    ? `${envPublicSiteUrl}/`
+    : isAdminSubdomain
+      ? `${window.location.protocol}//${window.location.hostname.replace(/^admin\./i, '')}${window.location.port ? `:${window.location.port}` : ''}/`
+      : `${origin}/`;
   const privateAdminUrl = isAdminSubdomain ? `${origin}/` : `${origin}/admin`;
 
   const loadSecurity = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await fetch('/api/admin/security', {
+      const resp = await fetch(apiUrl('/api/admin/security'), {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
       if (resp.ok) {
@@ -110,7 +132,7 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
     setErrorMsg('');
     setFeedback('');
     setRecoveryCodes([]);
-    const resp = await fetch('/api/admin/security/mfa/begin', {
+    const resp = await fetch(apiUrl('/api/admin/security/mfa/begin'), {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -128,7 +150,7 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
     e.preventDefault();
     setErrorMsg('');
     setFeedback('');
-    const resp = await fetch('/api/admin/security/mfa/confirm', {
+    const resp = await fetch(apiUrl('/api/admin/security/mfa/confirm'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -157,7 +179,7 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
     e.preventDefault();
     setErrorMsg('');
     setFeedback('');
-    const resp = await fetch('/api/admin/security/mfa/disable', {
+    const resp = await fetch(apiUrl('/api/admin/security/mfa/disable'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -185,7 +207,7 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
       setErrorMsg(lang === 'ar' ? 'كلمتا المرور غير متطابقتين.' : 'New passwords do not match.');
       return;
     }
-    const resp = await fetch('/api/admin/security/change-password', {
+    const resp = await fetch(apiUrl('/api/admin/security/change-password'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -219,7 +241,7 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
 
   const handleRevokeAll = async () => {
     setErrorMsg('');
-    const resp = await fetch('/api/admin/security/revoke-all', {
+    const resp = await fetch(apiUrl('/api/admin/security/revoke-all'), {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -228,17 +250,31 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
     }
   };
 
+  const handleToggleNewPerm = (perm: AdminPermission) => {
+    setTeamPermissions((prev) =>
+      prev.includes(perm)
+        ? prev.length > 1
+          ? prev.filter((p) => p !== perm)
+          : prev
+        : [...prev, perm]
+    );
+  };
+
   const handleAddManager = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setFeedback('');
-    const resp = await fetch('/api/admin/security/team', {
+    const resp = await fetch(apiUrl('/api/admin/security/team'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${adminToken}`,
       },
-      body: JSON.stringify({ username: teamUsername.trim(), password: teamPassword }),
+      body: JSON.stringify({
+        username: teamUsername.trim(),
+        password: teamPassword,
+        permissions: teamPermissions,
+      }),
     });
     const data = await resp.json();
     if (!resp.ok) {
@@ -247,15 +283,46 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
     }
     setTeamUsername('');
     setTeamPassword('');
+    setTeamPermissions(['orders', 'products', 'loyalty']);
     setFeedback(
       lang === 'ar' ? 'تم إنشاء حساب مدير تشغيل بصلاحيات محدودة.' : 'Manager account created.'
     );
     await loadSecurity();
   };
 
+  const handleToggleExistingManagerPerm = async (user: TeamUserView, perm: AdminPermission) => {
+    const current = user.permissions && user.permissions.length > 0 ? user.permissions : ['orders', 'products', 'loyalty', 'customers', 'notifications'] as AdminPermission[];
+    const next = current.includes(perm)
+      ? current.filter((p) => p !== perm)
+      : [...current, perm];
+    if (next.length === 0) {
+      setErrorMsg(
+        lang === 'ar' ? 'يجب الإبقاء على صلاحية واحدة على الأقل.' : 'At least one permission must remain enabled.'
+      );
+      return;
+    }
+    setErrorMsg('');
+    setFeedback('');
+    const resp = await fetch(apiUrl(`/api/admin/security/team/${user.id}`), {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ permissions: next }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      setErrorMsg(data.error || 'Could not update manager permissions');
+      return;
+    }
+    setFeedback(lang === 'ar' ? 'تم تحديث صلاحيات المدير بنجاح.' : 'Manager permissions updated.');
+    await loadSecurity();
+  };
+
   const handleDeleteManager = async (userId: string) => {
     setErrorMsg('');
-    const resp = await fetch(`/api/admin/security/team/${userId}`, {
+    const resp = await fetch(apiUrl(`/api/admin/security/team/${userId}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -649,52 +716,91 @@ export const AdminSecurityPanel: React.FC<AdminSecurityPanelProps> = ({
               : 'Only the Owner role can manage security, MFA, backups, and global site settings; Manager accounts operate orders, products, and loyalty.'}
           </p>
 
-          <form onSubmit={handleAddManager} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <input
-              required
-              dir="ltr"
-              value={teamUsername}
-              onChange={(e) => setTeamUsername(e.target.value)}
-              placeholder={lang === 'ar' ? 'اسم المستخدم للمدير' : 'Manager Username'}
-              className="px-3 py-2 border border-[#944A5E] bg-[#461221] text-white"
-            />
-            <input
-              required
-              type="password"
-              dir="ltr"
-              value={teamPassword}
-              onChange={(e) => setTeamPassword(e.target.value)}
-              placeholder={lang === 'ar' ? 'كلمة مرور قوية (10+ أحرف)' : 'Strong Password (10+ chars)'}
-              className="px-3 py-2 border border-[#944A5E] bg-[#461221] text-white"
-            />
-            <button
-              type="submit"
-              className="px-5 py-2 bg-[#0E0A0C] border border-[#944A5E] text-white font-medium hover:border-white"
-            >
-              {lang === 'ar' ? 'إضافة حساب مدير' : 'Create Manager Account'}
-            </button>
+          <form onSubmit={handleAddManager} className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <input
+                required
+                dir="ltr"
+                value={teamUsername}
+                onChange={(e) => setTeamUsername(e.target.value)}
+                placeholder={lang === 'ar' ? 'اسم المستخدم للمدير' : 'Manager Username'}
+                className="px-3 py-2 border border-[#944A5E] bg-[#461221] text-white"
+              />
+              <input
+                required
+                type="password"
+                dir="ltr"
+                value={teamPassword}
+                onChange={(e) => setTeamPassword(e.target.value)}
+                placeholder={lang === 'ar' ? 'كلمة مرور قوية (10+ أحرف)' : 'Strong Password (10+ chars)'}
+                className="px-3 py-2 border border-[#944A5E] bg-[#461221] text-white"
+              />
+              <button
+                type="submit"
+                className="px-5 py-2 bg-[#0E0A0C] border border-[#944A5E] text-white font-medium hover:border-white"
+              >
+                {lang === 'ar' ? 'إضافة حساب مدير' : 'Create Manager Account'}
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 pt-1">
+              <span className="text-white/80 font-medium">
+                {lang === 'ar' ? 'الصلاحيات الممنوحة:' : 'Granted Permissions:'}
+              </span>
+              {PERMISSION_LABELS.map((perm) => (
+                <label key={perm.id} className="inline-flex items-center gap-1.5 cursor-pointer text-white">
+                  <input
+                    type="checkbox"
+                    checked={teamPermissions.includes(perm.id)}
+                    onChange={() => handleToggleNewPerm(perm.id)}
+                    className="accent-[#0E0A0C]"
+                  />
+                  <span>{lang === 'ar' ? perm.labelAr : perm.labelEn}</span>
+                </label>
+              ))}
+            </div>
           </form>
 
           {sec?.teamUsers && sec.teamUsers.length > 0 && (
             <div className="border border-[#944A5E] divide-y divide-[#944A5E] bg-[#461221]">
-              {sec.teamUsers.map((u) => (
-                <div key={u.id} className="p-3 flex items-center justify-between gap-3">
-                  <div>
-                    <span className="font-bold text-white" dir="ltr">
-                      {u.username}
-                    </span>{' '}
-                    <span className="text-white/70">· Role: MANAGER</span>
+              {sec.teamUsers.map((u) => {
+                const userPerms =
+                  u.permissions && u.permissions.length > 0
+                    ? u.permissions
+                    : (['orders', 'products', 'loyalty', 'customers', 'notifications'] as AdminPermission[]);
+                return (
+                  <div key={u.id} className="p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <span className="font-bold text-white" dir="ltr">
+                          {u.username}
+                        </span>{' '}
+                        <span className="text-white/70">· Role: MANAGER</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteManager(u.id)}
+                        aria-label={`Remove ${u.username}`}
+                        className="p-1.5 border border-[#944A5E] bg-[#5E1D2F] text-white hover:border-white"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-[11px]">
+                      {PERMISSION_LABELS.map((perm) => (
+                        <label key={perm.id} className="inline-flex items-center gap-1.5 cursor-pointer text-white/90">
+                          <input
+                            type="checkbox"
+                            checked={userPerms.includes(perm.id)}
+                            onChange={() => void handleToggleExistingManagerPerm(u, perm.id)}
+                            className="accent-[#0E0A0C]"
+                          />
+                          <span>{lang === 'ar' ? perm.labelAr : perm.labelEn}</span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteManager(u.id)}
-                    aria-label={`Remove ${u.username}`}
-                    className="p-1.5 border border-[#944A5E] bg-[#5E1D2F] text-white hover:border-white"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

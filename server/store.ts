@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
   AdminNotification,
+  AdminPermission,
   AuditLogEntry,
   BirthdayCampaign,
   CustomerRecord,
@@ -22,6 +23,21 @@ import {
 
 export type AdminRole = 'owner' | 'manager';
 
+export const ALL_ADMIN_PERMISSIONS: AdminPermission[] = [
+  'orders',
+  'products',
+  'loyalty',
+  'customers',
+  'notifications',
+];
+
+export const DEFAULT_MANAGER_PERMISSIONS: AdminPermission[] = [
+  'orders',
+  'products',
+  'loyalty',
+  'notifications',
+];
+
 export interface AdminCredentialRecord {
   username: string;
   passwordHash: string; // scrypt salt:hash
@@ -40,6 +56,7 @@ export interface AdminTeamUser {
   username: string;
   passwordHash: string;
   role: 'manager';
+  permissions?: AdminPermission[];
   tokenVersion: number;
   createdBy: string;
   createdAt: string;
@@ -68,9 +85,14 @@ export interface StoreDatabase {
   auditLogs: AuditLogEntry[];
 }
 
-const DATA_DIR = path.resolve(process.cwd(), '.data');
-const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
-const DATA_FILE = path.join(DATA_DIR, 'sedo-db.json');
+function getStoragePaths() {
+  const dataDir = process.env.SEDO_DATA_DIR
+    ? path.resolve(process.env.SEDO_DATA_DIR)
+    : path.resolve(process.cwd(), '.data');
+  const backupsDir = path.join(dataDir, 'backups');
+  const dataFile = path.join(dataDir, 'sedo-db.json');
+  return { dataDir, backupsDir, dataFile };
+}
 
 export function createBackupSnapshot(reason = 'manual'): {
   filename: string;
@@ -78,14 +100,15 @@ export function createBackupSnapshot(reason = 'manual'): {
   createdAt: string;
 } | null {
   try {
-    if (!fs.existsSync(DATA_FILE)) return null;
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true, mode: 0o700 });
+    const { backupsDir, dataFile } = getStoragePaths();
+    if (!fs.existsSync(dataFile)) return null;
+    fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
     const now = new Date();
     const stamp = now.toISOString().replace(/[:.]/g, '-');
     const safeReason = reason.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32);
     const filename = `sedo-db-${safeReason}-${stamp}.json`;
-    const dest = path.join(BACKUPS_DIR, filename);
-    fs.copyFileSync(DATA_FILE, dest);
+    const dest = path.join(backupsDir, filename);
+    fs.copyFileSync(dataFile, dest);
     try {
       fs.chmodSync(dest, 0o600);
     } catch {
@@ -100,23 +123,24 @@ export function createBackupSnapshot(reason = 'manual'): {
 
 export function runAutomatedDailyBackup(): { filename: string; createdAt: string } | null {
   try {
-    if (!fs.existsSync(DATA_FILE)) return null;
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true, mode: 0o700 });
+    const { backupsDir, dataFile } = getStoragePaths();
+    if (!fs.existsSync(dataFile)) return null;
+    fs.mkdirSync(backupsDir, { recursive: true, mode: 0o700 });
     const todayPrefix = `sedo-db-auto_daily-${new Date().toISOString().slice(0, 10)}`;
-    const existing = fs.readdirSync(BACKUPS_DIR).filter((f) => f.endsWith('.json'));
+    const existing = fs.readdirSync(backupsDir).filter((f) => f.endsWith('.json'));
     if (existing.some((f) => f.startsWith(todayPrefix))) {
       return null;
     }
     const snap = createBackupSnapshot('auto_daily');
     // Rotate automated daily backups keeping latest 14
     const autoBackups = fs
-      .readdirSync(BACKUPS_DIR)
+      .readdirSync(backupsDir)
       .filter((f) => f.startsWith('sedo-db-auto_daily-') && f.endsWith('.json'))
       .sort()
       .reverse();
     for (const oldFile of autoBackups.slice(14)) {
       try {
-        fs.unlinkSync(path.join(BACKUPS_DIR, oldFile));
+        fs.unlinkSync(path.join(backupsDir, oldFile));
       } catch {
         // ignore cleanup error
       }
@@ -130,12 +154,13 @@ export function runAutomatedDailyBackup(): { filename: string; createdAt: string
 
 export function listBackupSnapshots(): Array<{ filename: string; sizeBytes: number; mtime: string }> {
   try {
-    if (!fs.existsSync(BACKUPS_DIR)) return [];
+    const { backupsDir } = getStoragePaths();
+    if (!fs.existsSync(backupsDir)) return [];
     return fs
-      .readdirSync(BACKUPS_DIR)
+      .readdirSync(backupsDir)
       .filter((f) => f.endsWith('.json'))
       .map((filename) => {
-        const stat = fs.statSync(path.join(BACKUPS_DIR, filename));
+        const stat = fs.statSync(path.join(backupsDir, filename));
         return {
           filename,
           sizeBytes: stat.size,
@@ -178,75 +203,135 @@ export function wasLoadedFromDisk(): boolean {
   return loadedFromDisk;
 }
 
+export function resetDbCacheForTests(): void {
+  cachedDb = null;
+  loadedFromDisk = false;
+}
+
+function hydrateParsedDb(parsed: StoreDatabase): StoreDatabase {
+  const migrations: StoreMigrations = { ...(parsed.migrations || {}) };
+  let needsPersist = false;
+
+  const mergedSettings: StoreSettings = {
+    ...SEED_SETTINGS,
+    ...parsed.settings,
+    loyaltyReward: {
+      ...SEED_SETTINGS.loyaltyReward,
+      ...(parsed.settings?.loyaltyReward || {}),
+    },
+    paymentMethods:
+      Array.isArray(parsed.settings?.paymentMethods) && parsed.settings.paymentMethods.length > 0
+        ? parsed.settings.paymentMethods
+        : SEED_SETTINGS.paymentMethods,
+    categories:
+      Array.isArray(parsed.settings?.categories) && parsed.settings.categories.length > 0
+        ? parsed.settings.categories
+        : SEED_SETTINGS.categories.map((c) => ({ ...c })),
+  };
+
+  if (!migrations.contactInfoMigrated) {
+    if (mergedSettings.phone === '+964 770 000 0000') {
+      mergedSettings.phone = SEED_SETTINGS.phone;
+    }
+    if (!mergedSettings.secondaryPhone) {
+      mergedSettings.secondaryPhone = SEED_SETTINGS.secondaryPhone;
+    }
+    if (mergedSettings.instagramUrl === 'https://www.instagram.com/sedo.flowers.iq/') {
+      mergedSettings.instagramUrl = SEED_SETTINGS.instagramUrl;
+      mergedSettings.instagramHandle = SEED_SETTINGS.instagramHandle;
+    }
+    migrations.contactInfoMigrated = true;
+    needsPersist = true;
+  }
+
+  if (!migrations.proximityRadius2000) {
+    createBackupSnapshot('pre_radius_2000');
+    if (
+      !Number.isFinite(mergedSettings.proximityRadiusMeters) ||
+      mergedSettings.proximityRadiusMeters === 600 ||
+      mergedSettings.proximityRadiusMeters <= 0
+    ) {
+      mergedSettings.proximityRadiusMeters = 2000;
+    }
+    migrations.proximityRadius2000 = true;
+    needsPersist = true;
+  }
+
+  const adminCredential = parsed.adminCredential
+    ? {
+        ...parsed.adminCredential,
+        role: parsed.adminCredential.role || ('owner' as const),
+        tokenVersion: parsed.adminCredential.tokenVersion ?? 1,
+        passwordUpdatedAt:
+          parsed.adminCredential.passwordUpdatedAt || parsed.adminCredential.createdAt,
+      }
+    : null;
+
+  const adminUsers = Array.isArray(parsed.adminUsers)
+    ? parsed.adminUsers.map((u) => ({
+        ...u,
+        permissions:
+          Array.isArray(u.permissions) && u.permissions.length > 0
+            ? u.permissions
+            : [...DEFAULT_MANAGER_PERMISSIONS],
+      }))
+    : [];
+
+  loadedFromDisk = true;
+  cachedDb = {
+    ...createInitialDb(),
+    ...parsed,
+    adminCredential,
+    adminUsers,
+    migrations,
+    settings: mergedSettings,
+  };
+  if (needsPersist) {
+    persistDb();
+  }
+  return cachedDb;
+}
+
+function tryRecoverLatestBackup(): StoreDatabase | null {
+  try {
+    const snapshots = listBackupSnapshots();
+    const { backupsDir } = getStoragePaths();
+    for (const snap of snapshots) {
+      try {
+        const raw = fs.readFileSync(path.join(backupsDir, snap.filename), 'utf8');
+        const parsed = JSON.parse(raw) as StoreDatabase;
+        if (parsed && Array.isArray(parsed.products) && parsed.settings) {
+          const recovered = hydrateParsedDb(parsed);
+          persistDb();
+          console.warn(`Recovered SEDO database automatically from backup: ${snap.filename}`);
+          return recovered;
+        }
+      } catch {
+        // try next older backup
+      }
+    }
+  } catch {
+    // ignore backup directory error
+  }
+  return null;
+}
+
 export function getDb(): StoreDatabase {
   if (cachedDb) return cachedDb;
+  const { dataFile } = getStoragePaths();
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      const raw = fs.readFileSync(DATA_FILE, 'utf8');
+    if (fs.existsSync(dataFile)) {
+      const raw = fs.readFileSync(dataFile, 'utf8');
       const parsed = JSON.parse(raw) as StoreDatabase;
-      const migrations: StoreMigrations = { ...(parsed.migrations || {}) };
-      let needsPersist = false;
-
-      const mergedSettings: StoreSettings = {
-        ...SEED_SETTINGS,
-        ...parsed.settings,
-        loyaltyReward: {
-          ...SEED_SETTINGS.loyaltyReward,
-          ...(parsed.settings?.loyaltyReward || {}),
-        },
-        paymentMethods:
-          Array.isArray(parsed.settings?.paymentMethods) && parsed.settings.paymentMethods.length > 0
-            ? parsed.settings.paymentMethods
-            : SEED_SETTINGS.paymentMethods,
-        categories:
-          Array.isArray(parsed.settings?.categories) && parsed.settings.categories.length > 0
-            ? parsed.settings.categories
-            : SEED_SETTINGS.categories.map((c) => ({ ...c })),
-      };
-
-      if (!migrations.contactInfoMigrated) {
-        if (mergedSettings.phone === '+964 770 000 0000') {
-          mergedSettings.phone = SEED_SETTINGS.phone;
-        }
-        if (!mergedSettings.secondaryPhone) {
-          mergedSettings.secondaryPhone = SEED_SETTINGS.secondaryPhone;
-        }
-        if (mergedSettings.instagramUrl === 'https://www.instagram.com/sedo.flowers.iq/') {
-          mergedSettings.instagramUrl = SEED_SETTINGS.instagramUrl;
-          mergedSettings.instagramHandle = SEED_SETTINGS.instagramHandle;
-        }
-        migrations.contactInfoMigrated = true;
-        needsPersist = true;
-      }
-
-      if (!migrations.proximityRadius2000) {
-        createBackupSnapshot('pre_radius_2000');
-        if (
-          !Number.isFinite(mergedSettings.proximityRadiusMeters) ||
-          mergedSettings.proximityRadiusMeters === 600 ||
-          mergedSettings.proximityRadiusMeters <= 0
-        ) {
-          mergedSettings.proximityRadiusMeters = 2000;
-        }
-        migrations.proximityRadius2000 = true;
-        needsPersist = true;
-      }
-
-      loadedFromDisk = true;
-      cachedDb = {
-        ...createInitialDb(),
-        ...parsed,
-        migrations,
-        settings: mergedSettings,
-      };
-      if (needsPersist) {
-        persistDb();
-      }
-      return cachedDb;
+      return hydrateParsedDb(parsed);
     }
   } catch (err) {
-    console.error('Failed to read store database, initializing fresh store:', err);
+    console.error('Failed to read store database, attempting automatic backup recovery:', err);
   }
+
+  const recovered = tryRecoverLatestBackup();
+  if (recovered) return recovered;
+
   loadedFromDisk = false;
   cachedDb = createInitialDb();
   persistDb();
@@ -255,12 +340,13 @@ export function getDb(): StoreDatabase {
 
 export function persistDb(): void {
   if (!cachedDb) return;
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  const tmpFile = `${DATA_FILE}.tmp`;
+  const { dataDir, dataFile } = getStoragePaths();
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const tmpFile = `${dataFile}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(cachedDb, null, 2), { encoding: 'utf8', mode: 0o600 });
-  fs.renameSync(tmpFile, DATA_FILE);
+  fs.renameSync(tmpFile, dataFile);
   try {
-    fs.chmodSync(DATA_FILE, 0o600);
+    fs.chmodSync(dataFile, 0o600);
   } catch {
     // ignore chmod failures on restricted filesystems
   }

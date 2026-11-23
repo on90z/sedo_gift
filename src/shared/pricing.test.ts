@@ -143,3 +143,60 @@ test('Iraqi phone validation, birthday check, and English numeral formatting', (
   assert.equal(toWhatsAppUrl('07762963674'), 'https://wa.me/9647762963674');
   assert.equal(toWhatsAppUrl('07733484176'), 'https://wa.me/9647733484176');
 });
+
+test('multi-line cart items enforce aggregate stock for ready-made products and custom rose varieties', () => {
+  const limitedProduct = { ...SEED_PRODUCTS[0], id: 'prod_limited', stock: 3, isAvailable: true };
+  assert.throws(
+    () =>
+      validateAndPriceCartItems(
+        [
+          { type: 'ready_made', productId: 'prod_limited', quantity: 2 },
+          { type: 'ready_made', productId: 'prod_limited', quantity: 2 },
+        ],
+        [limitedProduct],
+        SEED_OPTIONS,
+        3000
+      ),
+    /insufficient stock/i
+  );
+
+  const limitedOptions = SEED_OPTIONS.map((o) =>
+    o.id === 'ft_ecuador_rose' ? { ...o, stock: 12 } : o
+  );
+  assert.throws(
+    () =>
+      validateAndPriceCartItems(
+        [
+          {
+            type: 'custom_bouquet',
+            quantity: 1,
+            customSelection: {
+              roseQuantity: 7,
+              flowerTypeId: 'ft_ecuador_rose',
+              colorIds: ['fc_red'],
+              wrappingId: 'wrap_korean',
+              arrangementId: 'arr_round',
+              giftIds: [],
+            },
+          },
+          {
+            type: 'custom_bouquet',
+            quantity: 1,
+            customSelection: {
+              roseQuantity: 7,
+              flowerTypeId: 'ft_ecuador_rose',
+              colorIds: ['fc_red'],
+              wrappingId: 'wrap_korean',
+              arrangementId: 'arr_round',
+              giftIds: [],
+            },
+          },
+        ],
+        SEED_PRODUCTS,
+        limitedOptions,
+        3000
+      ),
+    /insufficient stock/i
+  );
+});
+

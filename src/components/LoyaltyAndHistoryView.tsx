@@ -13,6 +13,7 @@ import type {
 import { formatIqd } from '../shared/pricing.ts';
 import { evaluateProximityAlert } from '../shared/geo.ts';
 import { STATUS_LABELS, UI_COPY } from '../i18n/translations.ts';
+import { apiUrl } from '../lib/api.ts';
 
 interface LoyaltyAndHistoryViewProps {
   lang: Language;
@@ -55,7 +56,7 @@ export const LoyaltyAndHistoryView: React.FC<LoyaltyAndHistoryViewProps> = ({
     setErrorMsg('');
     setLoading(true);
     try {
-      const resp = await fetch('/api/customers/verify', {
+      const resp = await fetch(apiUrl('/api/customers/verify'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: phone.trim(), birthDate }),
@@ -95,7 +96,7 @@ export const LoyaltyAndHistoryView: React.FC<LoyaltyAndHistoryViewProps> = ({
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         if (customerToken) {
-          const resp = await fetch('/api/customers/me/consent', {
+          const resp = await fetch(apiUrl('/api/customers/me/consent'), {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
@@ -150,7 +151,7 @@ export const LoyaltyAndHistoryView: React.FC<LoyaltyAndHistoryViewProps> = ({
     const permission = await Notification.requestPermission();
     if (permission === 'granted') {
       if (customerToken) {
-        const resp = await fetch('/api/customers/me/consent', {
+        const resp = await fetch(apiUrl('/api/customers/me/consent'), {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
@@ -173,7 +174,7 @@ export const LoyaltyAndHistoryView: React.FC<LoyaltyAndHistoryViewProps> = ({
 
   const handleWithdrawConsent = async () => {
     if (!customerToken) return;
-    const resp = await fetch('/api/customers/me/consent', {
+    const resp = await fetch(apiUrl('/api/customers/me/consent'), {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',

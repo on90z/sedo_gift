@@ -1,5 +1,12 @@
 export type Language = 'ar' | 'en';
 
+export type AdminPermission =
+  | 'orders'
+  | 'products'
+  | 'loyalty'
+  | 'customers'
+  | 'notifications';
+
 export type OrderStatus =
   | 'New'
   | 'Confirmed'

@@ -37,6 +37,7 @@ import {
   syncFullCatalogToFirestore,
   syncSettingsToFirestore,
 } from '../../lib/firestoreCatalogSync.ts';
+import { apiUrl } from '../../lib/api.ts';
 import { QrCodeCard } from '../QrCodeCard.tsx';
 import { SafeImage } from '../SafeImage.tsx';
 
@@ -92,14 +93,17 @@ export const AdminLoyaltyPanel: React.FC<LoyaltyPanelProps> = ({
     });
   }, [settings]);
 
-  const eligibleOrders = orders.filter((o) => !o.stampAwarded && o.status !== 'Cancelled');
+  const eligibleOrders = orders.filter((o) => !o.stampAwarded && o.status === 'Completed');
+  const pendingIncompleteCount = orders.filter(
+    (o) => !o.stampAwarded && o.status !== 'Completed' && o.status !== 'Cancelled'
+  ).length;
 
   const handleAwardStamp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrderId) return;
     setFeedback('');
     setErrorMsg('');
-    const resp = await fetch('/api/admin/loyalty/award-stamp', {
+    const resp = await fetch(apiUrl('/api/admin/loyalty/award-stamp'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -134,7 +138,7 @@ export const AdminLoyaltyPanel: React.FC<LoyaltyPanelProps> = ({
     }
     setFeedback('');
     setErrorMsg('');
-    const resp = await fetch('/api/admin/loyalty/reverse-stamp', {
+    const resp = await fetch(apiUrl('/api/admin/loyalty/reverse-stamp'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -155,7 +159,7 @@ export const AdminLoyaltyPanel: React.FC<LoyaltyPanelProps> = ({
   const handleRedeemReward = async (cardId: string) => {
     setFeedback('');
     setErrorMsg('');
-    const resp = await fetch('/api/admin/loyalty/redeem-reward', {
+    const resp = await fetch(apiUrl('/api/admin/loyalty/redeem-reward'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -182,7 +186,7 @@ export const AdminLoyaltyPanel: React.FC<LoyaltyPanelProps> = ({
     setFeedback('');
     setErrorMsg('');
     try {
-      const resp = await fetch('/api/admin/settings', {
+      const resp = await fetch(apiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -278,6 +282,13 @@ export const AdminLoyaltyPanel: React.FC<LoyaltyPanelProps> = ({
             {lang === 'ar' ? 'منح ختم (+1)' : 'Approve +1 Stamp'}
           </button>
         </div>
+        {pendingIncompleteCount > 0 && (
+          <p className="text-xs text-white/75">
+            {lang === 'ar'
+              ? `ملاحظة: يوجد ${pendingIncompleteCount} طلب غير مكتمل. يجب تغيير حالة الطلب إلى "مكتمل" أولاً قبل اعتماد ختم الولاء.`
+              : `Note: ${pendingIncompleteCount} order(s) must first be updated to Completed status before a loyalty stamp can be approved.`}
+          </p>
+        )}
       </form>
 
       {/* Customer Loyalty Cards */}
@@ -544,7 +555,7 @@ export const AdminCustomersAndBirthdaysPanel: React.FC<CustomersAndBirthdaysPane
   const handleSaveCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
     setFeedback('');
-    const resp = await fetch('/api/admin/birthdays/campaigns', {
+    const resp = await fetch(apiUrl('/api/admin/birthdays/campaigns'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -568,7 +579,7 @@ export const AdminCustomersAndBirthdaysPanel: React.FC<CustomersAndBirthdaysPane
   };
 
   const handleToggleCampaign = async (c: BirthdayCampaign) => {
-    await fetch('/api/admin/birthdays/campaigns', {
+    await fetch(apiUrl('/api/admin/birthdays/campaigns'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -596,7 +607,7 @@ export const AdminCustomersAndBirthdaysPanel: React.FC<CustomersAndBirthdaysPane
     e.preventDefault();
     if (!editingCampaignId) return;
     setFeedback('');
-    const resp = await fetch('/api/admin/birthdays/campaigns', {
+    const resp = await fetch(apiUrl('/api/admin/birthdays/campaigns'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -622,7 +633,7 @@ export const AdminCustomersAndBirthdaysPanel: React.FC<CustomersAndBirthdaysPane
 
   const handleDeleteCampaign = async (campaignId: string) => {
     setFeedback('');
-    const resp = await fetch(`/api/admin/birthdays/campaigns/${campaignId}`, {
+    const resp = await fetch(apiUrl(`/api/admin/birthdays/campaigns/${campaignId}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -635,7 +646,7 @@ export const AdminCustomersAndBirthdaysPanel: React.FC<CustomersAndBirthdaysPane
 
   const handleDispatchBirthday = async (customerId: string, campaignId: string) => {
     setFeedback('');
-    const resp = await fetch('/api/admin/birthdays/dispatch', {
+    const resp = await fetch(apiUrl('/api/admin/birthdays/dispatch'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -973,7 +984,7 @@ export const AdminNotificationsAndProximityPanel: React.FC<NotificationsAndProxi
   }, [settings]);
 
   const handleMarkRead = async (notif: AdminNotification) => {
-    await fetch(`/api/admin/notifications/${notif.id}/read`, {
+    await fetch(apiUrl(`/api/admin/notifications/${notif.id}/read`), {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${adminToken}` },
     });
@@ -997,7 +1008,7 @@ export const AdminNotificationsAndProximityPanel: React.FC<NotificationsAndProxi
     if (tgToken.trim()) payload.telegramBotToken = tgToken.trim();
     if (tgChatId.trim()) payload.telegramChatId = tgChatId.trim();
 
-    const resp = await fetch('/api/admin/settings', {
+    const resp = await fetch(apiUrl('/api/admin/settings'), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -1283,7 +1294,7 @@ export const AdminStoreAndMapsPanel: React.FC<StoreAndMapsPanelProps> = ({
 
   useEffect(() => {
     let active = true;
-    fetch('/api/admin/backups', {
+    fetch(apiUrl('/api/admin/backups'), {
       headers: { Authorization: `Bearer ${adminToken}` },
     })
       .then((r) => (r.ok ? r.json() : null))
@@ -1303,7 +1314,7 @@ export const AdminStoreAndMapsPanel: React.FC<StoreAndMapsPanelProps> = ({
     setErrorMsg('');
     const fd = new FormData();
     fd.append('image', file);
-    const resp = await fetch('/api/admin/upload', {
+    const resp = await fetch(apiUrl('/api/admin/upload'), {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
       body: fd,
@@ -1328,7 +1339,7 @@ export const AdminStoreAndMapsPanel: React.FC<StoreAndMapsPanelProps> = ({
       const latNum = form.latitude.trim() ? Number(form.latitude) : null;
       const lngNum = form.longitude.trim() ? Number(form.longitude) : null;
 
-      const resp = await fetch('/api/admin/settings', {
+      const resp = await fetch(apiUrl('/api/admin/settings'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -1375,7 +1386,7 @@ export const AdminStoreAndMapsPanel: React.FC<StoreAndMapsPanelProps> = ({
     setFeedback('');
     setErrorMsg('');
     try {
-      const resp = await fetch('/api/admin/backups', {
+      const resp = await fetch(apiUrl('/api/admin/backups'), {
         method: 'POST',
         headers: { Authorization: `Bearer ${adminToken}` },
       });

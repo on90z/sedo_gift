@@ -143,6 +143,8 @@ export function validateAndPriceCartItems(
   }
 
   const validatedItems: ValidatedOrderItem[] = [];
+  const productQtyRequested = new Map<string, number>();
+  const flowerQtyRequested = new Map<string, number>();
   let subtotalIqd = 0;
 
   inputs.forEach((input, idx) => {
@@ -152,12 +154,14 @@ export function validateAndPriceCartItems(
     }
 
     if (input.type === 'ready_made') {
+      const nextProdQty = (productQtyRequested.get(input.productId || '') || 0) + qty;
       const product = products.find(
-        (p) => p.id === input.productId && p.isAvailable && p.stock >= qty
+        (p) => p.id === input.productId && p.isAvailable && p.stock >= nextProdQty
       );
       if (!product) {
         throw new Error(`Product unavailable or insufficient stock: ${input.productId}`);
       }
+      productQtyRequested.set(product.id, nextProdQty);
       const unitPriceIqd = getEffectiveProductPrice(product);
       const lineTotalIqd = unitPriceIqd * qty;
       subtotalIqd += lineTotalIqd;
@@ -184,9 +188,12 @@ export function validateAndPriceCartItems(
         maxCustomRoses
       );
       const flowerType = options.find((o) => o.id === sel.flowerTypeId)!;
-      if (flowerType.stock < sel.roseQuantity * qty) {
+      const nextFlowerQty =
+        (flowerQtyRequested.get(flowerType.id) || 0) + breakdown.roseQuantity * qty;
+      if (flowerType.stock < nextFlowerQty) {
         throw new Error(`Insufficient stock for ${flowerType.nameEn}`);
       }
+      flowerQtyRequested.set(flowerType.id, nextFlowerQty);
       const colors = sel.colorIds.map((cid) => options.find((o) => o.id === cid)!);
       const wrapping = options.find((o) => o.id === sel.wrappingId)!;
       const arrangement = options.find((o) => o.id === sel.arrangementId)!;

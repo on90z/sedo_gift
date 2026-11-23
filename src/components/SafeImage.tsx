@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Flower2 } from 'lucide-react';
+import { resolveMediaUrl } from '../lib/api.ts';
 
 interface SafeImageProps {
   src?: string;
@@ -15,8 +16,13 @@ export const SafeImage: React.FC<SafeImageProps> = ({
   aspectClass = '',
 }) => {
   const [failed, setFailed] = useState(false);
+  const resolvedSrc = resolveMediaUrl(src);
 
-  if (!src || failed) {
+  useEffect(() => {
+    setFailed(false);
+  }, [resolvedSrc]);
+
+  if (!resolvedSrc || failed) {
     return (
       <div
         className={`flex flex-col items-center justify-center bg-[#461221] border border-[#944A5E]/60 text-white/75 p-4 ${aspectClass} ${className}`}
@@ -31,7 +37,7 @@ export const SafeImage: React.FC<SafeImageProps> = ({
 
   return (
     <img
-      src={src}
+      src={resolvedSrc}
       alt={alt}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}

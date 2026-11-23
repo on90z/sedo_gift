@@ -4,6 +4,8 @@ import { Download, QrCode } from 'lucide-react';
 import type { Language } from '../shared/types.ts';
 import { UI_COPY } from '../i18n/translations.ts';
 
+import { sanitizeHttpOrigin } from '../lib/api.ts';
+
 interface QrCodeCardProps {
   url?: string;
   lang: Language;
@@ -14,10 +16,12 @@ export const QrCodeCard: React.FC<QrCodeCardProps> = ({ url, lang, compact = fal
   const [dataUrl, setDataUrl] = useState<string>('');
   const [svgMarkup, setSvgMarkup] = useState<string>('');
   const t = UI_COPY[lang];
+  const configuredPublicUrl = sanitizeHttpOrigin(import.meta.env?.VITE_PUBLIC_SITE_URL);
   const defaultPublicUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.protocol}//${window.location.hostname.replace(/^admin\./i, 'www.')}${window.location.port ? `:${window.location.port}` : ''}`
-      : 'https://sedo-flowers.iq';
+    configuredPublicUrl ||
+    (typeof window !== 'undefined'
+      ? `${window.location.protocol}//${window.location.hostname.replace(/^admin\./i, '')}${window.location.port ? `:${window.location.port}` : ''}`
+      : 'https://sedo-flowers.netlify.app');
   const targetUrl = url || defaultPublicUrl;
 
   useEffect(() => {

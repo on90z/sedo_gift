@@ -11,6 +11,7 @@ import type {
 } from '../shared/types.ts';
 import { formatIqd, isValidIraqiPhone } from '../shared/pricing.ts';
 import { STATUS_LABELS, UI_COPY } from '../i18n/translations.ts';
+import { apiUrl } from '../lib/api.ts';
 import { SafeImage } from './SafeImage.tsx';
 
 export interface LocalCartItem {
@@ -40,6 +41,7 @@ interface CartDrawerAndCheckoutProps {
     order: OrderRecord;
     loyaltyCard?: LoyaltyCardRecord;
     customerToken?: string;
+    marketingConsent: boolean;
   }) => void;
   onOpenLoyalty: () => void;
 }
@@ -81,14 +83,26 @@ export const CartDrawerAndCheckout: React.FC<CartDrawerAndCheckoutProps> = ({
   const [clientRequestId, setClientRequestId] = useState(() => `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
 
   useEffect(() => {
+    const activeMethods = settings.paymentMethods.filter((pm) => pm.isActive && pm.isIntegrated);
+    if (activeMethods.length > 0 && !activeMethods.some((pm) => pm.id === selectedPayment)) {
+      setSelectedPayment(activeMethods[0].id);
+    }
+  }, [settings.paymentMethods, selectedPayment]);
+
+  useEffect(() => {
     if (!open) return;
+    if (step === 'confirmed' && items.length > 0) {
+      setStep('cart');
+      setConfirmedOrder(null);
+      setErrorMsg('');
+    }
     if (items.length === 0) {
       setServerTotals(null);
       if (step === 'checkout') setStep('cart');
       return;
     }
     let active = true;
-    fetch('/api/calculate-order', {
+    fetch(apiUrl('/api/calculate-order'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -96,14 +110,19 @@ export const CartDrawerAndCheckout: React.FC<CartDrawerAndCheckoutProps> = ({
         promoCode: promoApplied || undefined,
       }),
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (active && data) {
+      .then(async (r) => {
+        const data = await r.json().catch(() => null);
+        if (!active) return;
+        if (r.ok && data) {
+          setErrorMsg('');
           setServerTotals({
             subtotalIqd: data.subtotalIqd,
             discountIqd: data.discountIqd,
             totalIqd: data.totalIqd,
           });
+        } else {
+          setServerTotals(null);
+          if (data?.error) setErrorMsg(data.error);
         }
       })
       .catch(() => {});
@@ -127,7 +146,7 @@ export const CartDrawerAndCheckout: React.FC<CartDrawerAndCheckoutProps> = ({
       return;
     }
     try {
-      const resp = await fetch('/api/calculate-order', {
+      const resp = await fetch(apiUrl('/api/calculate-order'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -181,7 +200,7 @@ export const CartDrawerAndCheckout: React.FC<CartDrawerAndCheckoutProps> = ({
 
     setSubmitting(true);
     try {
-      const resp = await fetch('/api/orders', {
+      const resp = await fetch(apiUrl('/api/orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -212,6 +231,7 @@ export const CartDrawerAndCheckout: React.FC<CartDrawerAndCheckoutProps> = ({
         order: data.order,
         loyaltyCard: data.loyaltyCard,
         customerToken: data.customerToken,
+        marketingConsent,
       });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Order failed');

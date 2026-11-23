@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { AlertTriangle, Instagram, MapPin, MessageCircle, Phone, ShieldCheck, ShoppingBag } from 'lucide-react';
 import { auth, testFirestoreConnection } from './lib/firebase.ts';
 import { fetchPublicCatalogFromFirestore } from './lib/firestoreCatalogSync.ts';
+import { apiUrl } from './lib/api.ts';
 import type {
   CustomBouquetSelection,
   CustomerRecord,
@@ -84,6 +85,7 @@ export default function App() {
   const [cartItems, setCartItems] = useState<LocalCartItem[]>(loadSavedCart);
   const [cartOpen, setCartOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   // Firebase Auth UID + Customer Verified Session (tokens in React memory only)
   const [firebaseUid, setFirebaseUid] = useState<string | null>(null);
@@ -129,8 +131,8 @@ export default function App() {
   const refreshCatalog = useCallback(async () => {
     try {
       const [catResp, cfgResp, cloudData] = await Promise.all([
-        fetch('/api/catalog'),
-        fetch('/api/public-config'),
+        fetch(apiUrl('/api/catalog')),
+        fetch(apiUrl('/api/public-config')),
         fetchPublicCatalogFromFirestore(),
       ]);
       let nextProducts = products;
@@ -232,7 +234,16 @@ export default function App() {
     lang,
   ]);
 
+  const clearToast = useCallback(() => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToastMsg(null);
+  }, []);
+
   const handleNavigate = (route: ActiveRoute) => {
+    clearToast();
     setActiveRoute(route);
     window.scrollTo({ top: 0, behavior: 'auto' });
     if (route === 'admin') {
@@ -244,8 +255,14 @@ export default function App() {
   };
 
   const showToast = (msg: string) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
     setToastMsg(msg);
-    setTimeout(() => setToastMsg(null), 3200);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMsg(null);
+      toastTimerRef.current = null;
+    }, 3200);
   };
 
   const handleAddReadyMade = (product: Product) => {
@@ -378,7 +395,10 @@ export default function App() {
           setLang((l) => (l === 'ar' ? 'en' : 'ar'));
         }}
         cartCount={totalCartCount}
-        onOpenCart={() => setCartOpen(true)}
+        onOpenCart={() => {
+          clearToast();
+          setCartOpen(true);
+        }}
         settings={settings}
       />
 
@@ -388,7 +408,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              setToastMsg(null);
+              clearToast();
               setCartOpen(true);
             }}
             className="inline-flex items-center gap-1.5 text-white/85 hover:text-white font-semibold underline"
@@ -495,31 +515,39 @@ export default function App() {
         onUpdateQty={handleUpdateCartQty}
         onRemoveItem={handleRemoveCartItem}
         onClearCart={() => setCartItems([])}
-        onOrderConfirmed={({ order, loyaltyCard: card, customerToken: tok }) => {
-          if (tok) setCustomerToken(tok);
-          if (card) setLoyaltyCard(card);
-          setCustomerOrders((prev) => [order, ...prev]);
-          setCustomer((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  totalOrders: prev.totalOrders + 1,
-                  totalSpentIqd: prev.totalSpentIqd + order.totalIqd,
-                }
-              : {
-                  id: order.customerId,
-                  userId: order.userId,
-                  fullName: order.customerName,
-                  phone: order.customerPhone,
-                  birthDate: order.customerBirthDate,
-                  marketingConsent: true,
-                  locationConsent: false,
-                  totalOrders: 1,
-                  totalSpentIqd: order.totalIqd,
-                  createdAt: order.createdAt,
-                  updatedAt: order.updatedAt,
-                }
-          );
+        onOrderConfirmed={({
+          order,
+          loyaltyCard: card,
+          customerToken: tok,
+          marketingConsent: consent,
+        }) => {
+          if (tok) {
+            setCustomerToken(tok);
+            if (card) setLoyaltyCard(card);
+            setCustomerOrders((prev) => [order, ...prev]);
+            setCustomer((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    marketingConsent: consent,
+                    totalOrders: prev.totalOrders + 1,
+                    totalSpentIqd: prev.totalSpentIqd + order.totalIqd,
+                  }
+                : {
+                    id: order.customerId,
+                    userId: order.userId,
+                    fullName: order.customerName,
+                    phone: order.customerPhone,
+                    birthDate: order.customerBirthDate,
+                    marketingConsent: consent,
+                    locationConsent: false,
+                    totalOrders: 1,
+                    totalSpentIqd: order.totalIqd,
+                    createdAt: order.createdAt,
+                    updatedAt: order.updatedAt,
+                  }
+            );
+          }
           void refreshCatalog();
         }}
         onOpenLoyalty={() => handleNavigate('loyalty')}
