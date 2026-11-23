@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { AlertTriangle, Instagram, MapPin, MessageCircle, Phone, ShoppingBag } from 'lucide-react';
+import { AlertTriangle, Instagram, MapPin, MessageCircle, Phone, ShieldCheck, ShoppingBag } from 'lucide-react';
 import { auth, testFirestoreConnection } from './lib/firebase.ts';
 import { fetchPublicCatalogFromFirestore } from './lib/firestoreCatalogSync.ts';
 import type {
@@ -49,6 +49,7 @@ function resolveInitialRoute(): ActiveRoute {
     'gifts',
     'loyalty',
     'contact',
+    'admin',
   ];
   return valid.includes(hash as ActiveRoute) ? (hash as ActiveRoute) : 'home';
 }
@@ -352,22 +353,6 @@ export default function App() {
 
   const totalCartCount = cartItems.reduce((sum, item) => sum + item.input.quantity, 0);
 
-  if (activeRoute === 'admin') {
-    return (
-      <div className="min-h-screen bg-[#5E1D2F] text-white">
-        <AdminDashboard
-          lang={lang}
-          onToggleLang={() => {
-            setLangTouchedByUser(true);
-            setLang((l) => (l === 'ar' ? 'en' : 'ar'));
-          }}
-          onCatalogUpdated={refreshCatalog}
-          onBackToStore={() => handleNavigate('home')}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen flex flex-col bg-[#5E1D2F] text-white">
       {mapsQuotaExceeded && (
@@ -488,6 +473,14 @@ export default function App() {
             mapsApiKey={mapsApiKey}
           />
         )}
+
+        {activeRoute === 'admin' && (
+          <AdminDashboard
+            lang={lang}
+            onCatalogUpdated={refreshCatalog}
+            onBackToStore={() => handleNavigate('home')}
+          />
+        )}
       </main>
 
       <CartDrawerAndCheckout
@@ -580,7 +573,7 @@ export default function App() {
 
           <div className="space-y-2.5 text-xs">
             <div className="font-semibold text-white">
-              {lang === 'ar' ? 'تواصل معنا' : 'Connect With Us'}
+              {lang === 'ar' ? 'التواصل والإدارة' : 'Connect & Store'}
             </div>
             <div className="text-white/75">
               {lang === 'ar' ? settings.workingHoursAr : settings.workingHoursEn}
@@ -619,6 +612,14 @@ export default function App() {
                 <Instagram className="w-3.5 h-3.5" />
                 <span dir="ltr">{settings.instagramHandle}</span>
               </a>
+              <button
+                type="button"
+                onClick={() => handleNavigate('admin')}
+                className="inline-flex items-center gap-1.5 text-white/80 hover:text-white font-medium hover:underline"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>{t.footerAdmin}</span>
+              </button>
             </div>
           </div>
         </div>
