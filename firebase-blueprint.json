@@ -1,0 +1,261 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Ready-made bouquet, flower category item, or gift product sold by SEDO.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "kind": { "type": "string", "enum": ["bouquet", "gift", "category_featured"] },
+        "category": { "type": "string", "maxLength": 64 },
+        "categoryAr": { "type": "string", "maxLength": 64 },
+        "nameAr": { "type": "string", "maxLength": 140 },
+        "nameEn": { "type": "string", "maxLength": 140 },
+        "descriptionAr": { "type": "string", "maxLength": 800 },
+        "descriptionEn": { "type": "string", "maxLength": 800 },
+        "priceIqd": { "type": "number" },
+        "promoPriceIqd": { "type": "number" },
+        "roseCount": { "type": "number" },
+        "stock": { "type": "number" },
+        "isAvailable": { "type": "boolean" },
+        "isFeatured": { "type": "boolean" },
+        "isBestSeller": { "type": "boolean" },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "kind", "category", "nameAr", "nameEn", "priceIqd", "stock", "isAvailable", "imageUrl"]
+    },
+    "OptionItem": {
+      "title": "BouquetOption",
+      "description": "Configurable custom bouquet component (flower type, color, wrapping, arrangement, or add-on gift).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "group": { "type": "string", "enum": ["flower_type", "flower_color", "wrapping", "arrangement", "gift"] },
+        "nameAr": { "type": "string", "maxLength": 120 },
+        "nameEn": { "type": "string", "maxLength": 120 },
+        "priceIqd": { "type": "number" },
+        "colorHex": { "type": "string", "maxLength": 16 },
+        "stock": { "type": "number" },
+        "isAvailable": { "type": "boolean" },
+        "imageUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "group", "nameAr", "nameEn", "priceIqd", "isAvailable", "imageUrl"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Customer profile with private contact details and birthday marketing consent.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "birthDate": { "type": "string", "maxLength": 16 },
+        "marketingConsent": { "type": "boolean" },
+        "locationConsent": { "type": "boolean" },
+        "totalOrders": { "type": "number" },
+        "totalSpentIqd": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "fullName", "phone", "birthDate", "marketingConsent", "locationConsent"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order containing ready-made or custom bouquet items and server-validated IQD totals.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "string", "maxLength": 40 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 32 },
+        "customerBirthDate": { "type": "string", "maxLength": 16 },
+        "status": { "type": "string", "enum": ["New", "Confirmed", "Preparing", "Ready", "Completed", "Cancelled"] },
+        "totalIqd": { "type": "number" },
+        "discountIqd": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 64 },
+        "deliveryType": { "type": "string", "enum": ["pickup", "delivery"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "customerId", "customerName", "customerPhone", "status", "totalIqd"]
+    },
+    "LoyaltyCard": {
+      "title": "LoyaltyCard",
+      "description": "Ten-stamp SEDO digital loyalty card controlled strictly by store administrators.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "stampsCount": { "type": "number" },
+        "rewardStatus": { "type": "string", "enum": ["in_progress", "unlocked", "redeemed"] },
+        "completedCardsCount": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "customerId", "customerName", "stampsCount", "rewardStatus"]
+    },
+    "LoyaltyTransaction": {
+      "title": "LoyaltyTransaction",
+      "description": "Immutable audit record of stamp approvals, reversals, and reward redemptions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "cardId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "enum": ["stamp_added", "stamp_reversed", "reward_redeemed"] },
+        "delta": { "type": "number" },
+        "note": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "cardId", "action", "delta"]
+    },
+    "StoreSettings": {
+      "title": "StoreSettings",
+      "description": "Public SEDO boutique settings including pricing, categories, banners, copy, location, hours, loyalty reward rules, and 2000m proximity settings.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64 },
+        "roseUnitPriceIqd": { "type": "number" },
+        "maxCustomRoses": { "type": "number" },
+        "storeNameAr": { "type": "string", "maxLength": 120 },
+        "storeNameEn": { "type": "string", "maxLength": 120 },
+        "taglineAr": { "type": "string", "maxLength": 160 },
+        "taglineEn": { "type": "string", "maxLength": 160 },
+        "heroHeadlineAr": { "type": "string", "maxLength": 240 },
+        "heroHeadlineEn": { "type": "string", "maxLength": 240 },
+        "heroSubtitleAr": { "type": "string", "maxLength": 500 },
+        "heroSubtitleEn": { "type": "string", "maxLength": 500 },
+        "aboutTitleAr": { "type": "string", "maxLength": 160 },
+        "aboutTitleEn": { "type": "string", "maxLength": 160 },
+        "aboutTextAr": { "type": "string", "maxLength": 800 },
+        "aboutTextEn": { "type": "string", "maxLength": 800 },
+        "footerTextAr": { "type": "string", "maxLength": 800 },
+        "footerTextEn": { "type": "string", "maxLength": 800 },
+        "categories": { "type": "array", "maxItems": 30 },
+        "addressAr": { "type": "string", "maxLength": 300 },
+        "addressEn": { "type": "string", "maxLength": 300 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "secondaryPhone": { "type": "string", "maxLength": 40 },
+        "instagramHandle": { "type": "string", "maxLength": 80 },
+        "instagramUrl": { "type": "string", "maxLength": 300 },
+        "workingHoursAr": { "type": "string", "maxLength": 160 },
+        "workingHoursEn": { "type": "string", "maxLength": 160 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "proximityRadiusMeters": { "type": "number" },
+        "proximityCooldownHours": { "type": "number" },
+        "defaultLanguage": { "type": "string", "enum": ["ar", "en"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "roseUnitPriceIqd", "storeNameAr", "storeNameEn"]
+    },
+    "AdminNotification": {
+      "title": "AdminNotification",
+      "description": "Real-time administrative order alert or promotional campaign record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["new_order", "birthday", "proximity", "system"] },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 600 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "title", "message", "isRead"]
+    },
+    "BirthdayCampaign": {
+      "title": "BirthdayCampaign",
+      "description": "Birthday discount or gift campaign configured by store admin.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "titleAr": { "type": "string", "maxLength": 160 },
+        "titleEn": { "type": "string", "maxLength": 160 },
+        "discountPercent": { "type": "number" },
+        "promoCode": { "type": "string", "maxLength": 40 },
+        "messageAr": { "type": "string", "maxLength": 500 },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["id", "titleAr", "promoCode", "isActive"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Administrative security and pricing audit log.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "actor": { "type": "string", "maxLength": 120 },
+        "action": { "type": "string", "maxLength": 120 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actor", "action"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized store administrator entry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["owner", "manager"] }
+      },
+      "required": ["uid", "email", "role"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Publicly browsable ready-made bouquets and gifts."
+    },
+    "/options/{optionId}": {
+      "schema": { "$ref": "#/entities/OptionItem" },
+      "description": "Custom bouquet builder options (flower types, colors, wrappings, arrangements, gifts)."
+    },
+    "/store_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StoreSettings" },
+      "description": "Public storefront configuration and pricing settings."
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Private customer records and consent flags."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer orders isolated by owner UID and admin."
+    },
+    "/loyalty_cards/{cardId}": {
+      "schema": { "$ref": "#/entities/LoyaltyCard" },
+      "description": "10-stamp digital loyalty cards controlled strictly by administrators."
+    },
+    "/loyalty_transactions/{txId}": {
+      "schema": { "$ref": "#/entities/LoyaltyTransaction" },
+      "description": "Loyalty stamp approvals, reversals, and reward redemptions."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/AdminNotification" },
+      "description": "Admin order notifications and alert feed."
+    },
+    "/birthday_campaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/BirthdayCampaign" },
+      "description": "Birthday promotions managed by admin."
+    },
+    "/audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Administrative audit trail."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin role registry."
+    }
+  }
+}

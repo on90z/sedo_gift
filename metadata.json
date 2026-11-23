@@ -1,0 +1,6 @@
+{
+  "name": "SEDO Flowers & Gifts",
+  "description": "SEDO Flowers & Gifts (سيدو للزهور والهدايا) — Luxury floral boutique, custom bouquet designer, digital loyalty card, and store management system in Karbala, Iraq.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --sedo-maroon-canvas: #5E1D2F;
+    --sedo-maroon-deep: #461221;
+    --sedo-maroon-card: #6E2438;
+    --sedo-maroon-soft: #7C2C42;
+    --sedo-maroon-border: #944A5E;
+    --sedo-black: #0E0A0C;
+    --sedo-white: #FFFFFF;
+    --sedo-loyalty-pink: #F48FB1;
+    --sedo-loyalty-pink-soft: #F8BBD0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    font-feature-settings: "kern" 1;
+    color-scheme: dark;
+  }
+
+  html[dir="rtl"],
+  html[dir="rtl"] body,
+  html[dir="rtl"] h1,
+  html[dir="rtl"] h2,
+  html[dir="rtl"] h3,
+  html[dir="rtl"] h4,
+  html[dir="rtl"] button,
+  html[dir="rtl"] input,
+  html[dir="rtl"] select,
+  html[dir="rtl"] textarea,
+  html[dir="rtl"] nav,
+  html[dir="rtl"] label,
+  html[dir="rtl"] .font-display,
+  html[dir="rtl"] .font-ui {
+    font-family: "IBM Plex Sans Arabic", "Plus Jakarta Sans", sans-serif;
+  }
+
+  html[dir="ltr"],
+  html[dir="ltr"] body,
+  html[dir="ltr"] h1,
+  html[dir="ltr"] h2,
+  html[dir="ltr"] h3,
+  html[dir="ltr"] h4,
+  html[dir="ltr"] button,
+  html[dir="ltr"] input,
+  html[dir="ltr"] select,
+  html[dir="ltr"] textarea,
+  html[dir="ltr"] nav,
+  html[dir="ltr"] label,
+  html[dir="ltr"] .font-display,
+  html[dir="ltr"] .font-ui {
+    font-family: "Plus Jakarta Sans", "IBM Plex Sans Arabic", sans-serif;
+  }
+
+  body {
+    font-weight: 400;
+  }
+
+  nav,
+  label {
+    font-weight: 500;
+  }
+
+  h2,
+  h3 {
+    font-weight: 600;
+  }
+
+  h1 {
+    font-weight: 700;
+  }
+}
+
+.tabular-nums-en {
+  font-variant-numeric: tabular-nums;
+  unicode-bidi: isolate;
+}
+
+html[dir="rtl"] .tabular-nums-en {
+  font-family: "IBM Plex Sans Arabic", "Plus Jakarta Sans", sans-serif;
+}
+
+html[dir="ltr"] .tabular-nums-en {
+  font-family: "Plus Jakarta Sans", "IBM Plex Sans Arabic", sans-serif;
+}
