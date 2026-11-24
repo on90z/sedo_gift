@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import type { Session } from '@supabase/supabase-js';
 import {
   APILoadingStatus,
   APIProvider,
@@ -10,94 +9,46 @@ import {
 } from '@vis.gl/react-google-maps';
 import {
   Award,
+  Banknote,
   Check,
   Clock,
   ExternalLink,
   Flower2,
   Gift,
   Instagram,
-  LogOut,
   MapPin,
+  MessageCircle,
   Minus,
   PackageCheck,
   Phone,
   Plus,
-  RefreshCw,
   Search,
-  ShieldCheck,
   Sparkles,
-  XCircle,
 } from 'lucide-react';
 import { supabase } from '../supabaseclient.tsx';
+import { AdminDashboard, ADMIN_STATUS_LABELS } from './AdminDashboard.tsx';
 import {
   calculateBouquetTotal,
   clampFlowerCount,
   extractCoordsFromMapsUrl,
   formatIqd,
   formatOrderDetailsText,
-  nextStampCount,
+  formatWhatsAppUrl,
   normalizePhone,
+  OFFICIAL_INSTAGRAM_URL,
+  OFFICIAL_PHONE_PRIMARY,
+  OFFICIAL_PHONE_SECONDARY,
+  parseStorePhoneList,
+  resolveInstagramUrl,
   type BouquetOrderDetails,
 } from './pricing.ts';
+import type { CustomerRow, OrderRow, ProductRow, RoutePath, StoreSettingsRow } from './types.ts';
 import bouquetRedImg from './assets/images/bouquet_red_velvet_1795361896339.jpg';
 import bouquetWhiteImg from './assets/images/bouquet_ivory_blush_1795361894392.jpg';
 import bouquetMixedImg from './assets/images/bouquet_golden_sun_1795361894089.jpg';
 import heroBouquetImg from './assets/images/hero_sedo_bouquet_1795361895118.jpg';
 import giftCollectionImg from './assets/images/gift_luxury_collection_1795361894946.jpg';
 import boutiqueImg from './assets/images/store_sedo_boutique_1795361894413.jpg';
-
-type RoutePath = 'home' | 'admin';
-type OrderStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled';
-
-interface ProductRow {
-  id: string;
-  name_ar: string;
-  category: 'flower' | 'wrapping' | 'gift' | string;
-  price_iqd: number;
-  image_url: string | null;
-  stock_quantity: number;
-  low_stock_threshold: number;
-  is_active: boolean;
-  created_at?: string;
-}
-
-interface CustomerRow {
-  id: string;
-  created_at?: string;
-  full_name: string;
-  phone: string;
-  birth_date: string | null;
-  stamps_count: number;
-  total_orders: number;
-}
-
-interface OrderRow {
-  id: string;
-  created_at: string;
-  status: OrderStatus | string;
-  total_price_iqd: number;
-  customer_id: string | null;
-  customer_name: string;
-  customer_phone: string;
-  customer_birth_date: string | null;
-  order_details: BouquetOrderDetails | Record<string, unknown> | string | null;
-}
-
-interface StoreSettingsRow {
-  id: number;
-  shop_name: string;
-  address: string;
-  working_hours: string;
-  phone_numbers: string | null;
-  instagram_url: string | null;
-  google_maps_url: string | null;
-}
-
-interface ProductDraft {
-  price_iqd: string;
-  stock_quantity: string;
-  is_active: boolean;
-}
 
 const FLOWER_COLORS = ['أحمر', 'أبيض', 'وردي', 'مشكّل', 'أصفر', 'بنفسجي'] as const;
 const BOUQUET_SHAPES = [
@@ -107,19 +58,6 @@ const BOUQUET_SHAPES = [
   'باقة يدوية ناعمة',
 ] as const;
 const QUICK_COUNTS = [5, 7, 11, 15, 21, 31] as const;
-
-const STATUS_LABELS: Record<string, string> = {
-  pending: 'قيد الانتظار',
-  confirmed: 'مؤكد',
-  completed: 'مكتمل',
-  cancelled: 'ملغي',
-};
-
-const CATEGORY_LABELS: Record<string, string> = {
-  flower: 'ورد',
-  wrapping: 'تغليف',
-  gift: 'هدية',
-};
 
 const MAPS_API_KEY = String(import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '').trim();
 
@@ -143,23 +81,14 @@ function formatDateTimeEn(iso: string | null | undefined): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Baghdad',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   }).format(d);
-}
-
-function translateAuthError(message: string): string {
-  const lower = message.toLowerCase();
-  if (lower.includes('invalid login credentials')) {
-    return 'البريد الإلكتروني أو كلمة المرور غير صحيحة.';
-  }
-  if (lower.includes('email not confirmed')) {
-    return 'الحساب بانتظار تأكيد البريد الإلكتروني في Supabase.';
-  }
-  return message;
 }
 
 function StoreLocationMap({
@@ -206,12 +135,7 @@ function StoreLocationMap({
   }
 
   return (
-    <APIProvider
-      apiKey={MAPS_API_KEY}
-      language="ar"
-      region="IQ"
-      libraries={['marker']}
-    >
+    <APIProvider apiKey={MAPS_API_KEY} language="ar" region="IQ" libraries={['marker']}>
       <InteractiveGoogleMap
         coords={coords}
         shopName={shopName}
@@ -297,7 +221,12 @@ export default function App() {
   }, []);
 
   if (route === 'admin') {
-    return <AdminPage onBackHome={() => navigateTo('home')} />;
+    return (
+      <AdminDashboard
+        onBackHome={() => navigateTo('home')}
+        getFallbackImage={getFallbackProductImage}
+      />
+    );
   }
 
   return <HomePage onOpenAdmin={() => navigateTo('admin')} />;
@@ -308,11 +237,16 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
   const [settings, setSettings] = useState<StoreSettingsRow>({
     id: 1,
     shop_name: 'SEDO للهدايا والزهور',
-    address: 'كربلاء - حي الميلاد - شارع الدرة',
-    working_hours: 'يومياً من 9:00 صباحاً إلى 1:00 بعد منتصف الليل',
-    phone_numbers: null,
-    instagram_url: null,
+    address: 'كربلاء - حي الميلاد - شارع الدرة - مجاور كوفي الدرة',
+    working_hours: 'يومياً من الساعة 9:00 صباحاً إلى 1:00 بعد منتصف الليل',
+    phone_numbers: `${OFFICIAL_PHONE_PRIMARY}, ${OFFICIAL_PHONE_SECONDARY}`,
+    whatsapp_numbers: `${OFFICIAL_PHONE_PRIMARY}, ${OFFICIAL_PHONE_SECONDARY}`,
+    instagram_url: OFFICIAL_INSTAGRAM_URL,
     google_maps_url: 'https://maps.google.com/?q=32.6027,44.0197',
+    loyalty_required_purchases: 9,
+    loyalty_reward_type: 'gift',
+    loyalty_reward_value: 'باقة أو هدية مجانية على الطلب العاشر',
+    cash_only: true,
   });
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -325,10 +259,14 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
   const [selectedWrappingId, setSelectedWrappingId] = useState<string>('');
   const [selectedGiftId, setSelectedGiftId] = useState<string>('');
 
-  // Customer form state (ONLY name, phone, birth_date — NO email)
+  // Customer form state (NO email field)
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerBirthDate, setCustomerBirthDate] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [cityArea, setCityArea] = useState('');
+  const [nearestLandmark, setNearestLandmark] = useState('');
+  const [orderNotes, setOrderNotes] = useState('');
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [orderSuccess, setOrderSuccess] = useState<{
@@ -364,7 +302,9 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
       if (productsRes.error) {
         setCatalogError('تعذّر تحميل المنتجات من قاعدة البيانات. يرجى المحاولة لاحقاً.');
       } else {
-        const list = (productsRes.data ?? []) as ProductRow[];
+        const list = ((productsRes.data ?? []) as ProductRow[]).sort(
+          (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)
+        );
         setProducts(list);
         const firstFlower =
           list.find((p) => p.category === 'flower' && p.stock_quantity > 0) ??
@@ -425,6 +365,19 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
     [selectedFlower, flowerCount, selectedWrapping, selectedGift]
   );
 
+  const phoneNumbers = useMemo(
+    () => parseStorePhoneList(settings.phone_numbers),
+    [settings.phone_numbers]
+  );
+  const whatsappNumbers = useMemo(
+    () => parseStorePhoneList(settings.whatsapp_numbers || settings.phone_numbers),
+    [settings.whatsapp_numbers, settings.phone_numbers]
+  );
+  const instagramUrl = useMemo(
+    () => resolveInstagramUrl(settings.instagram_url),
+    [settings.instagram_url]
+  );
+
   const handleCountChange = (next: number) => {
     setFlowerCount(clampFlowerCount(next, selectedFlower?.stock_quantity));
   };
@@ -466,6 +419,11 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
         gift_id: selectedGift?.id ?? null,
         gift_name: selectedGift?.name_ar ?? null,
         gift_price_iqd: selectedGift?.price_iqd ?? 0,
+        delivery_address: deliveryAddress.trim() || null,
+        city: cityArea.trim() || null,
+        nearest_landmark: nearestLandmark.trim() || null,
+        notes: orderNotes.trim() || null,
+        payment_method: 'cash_on_delivery',
       };
 
       const { data: rpcData, error: rpcError } = await supabase.rpc('submit_sedo_order', {
@@ -494,6 +452,10 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
       setCustomerName('');
       setCustomerPhone('');
       setCustomerBirthDate('');
+      setDeliveryAddress('');
+      setCityArea('');
+      setNearestLandmark('');
+      setOrderNotes('');
     } catch (err) {
       setOrderError(err instanceof Error ? err.message : 'حدث خطأ أثناء إرسال الطلب.');
     } finally {
@@ -542,7 +504,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
 
   return (
     <div dir="rtl" className="min-h-screen bg-[#5E1D2F] text-white">
-      {/* Header */}
+      {/* Header — NO admin link here per requirement */}
       <header className="sticky top-0 z-30 bg-[#461221]/95 backdrop-blur border-b border-white/15">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <a href="#top" className="flex items-center gap-3 shrink-0">
@@ -563,17 +525,19 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
               بطاقة الولاء
             </a>
             <a href="#location" className="hover:text-white transition">
-              العنوان وساعات العمل
+              التواصل والموقع
             </a>
           </nav>
 
-          <button
-            type="button"
-            onClick={onOpenAdmin}
-            className="px-4 py-2 rounded-xl bg-[#0E0A0C] text-white text-xs sm:text-sm font-medium border border-white/20 hover:bg-black transition shrink-0"
+          <a
+            href={formatWhatsAppUrl(whatsappNumbers[0] ?? OFFICIAL_PHONE_PRIMARY)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0E0A0C] text-white text-xs sm:text-sm font-medium border border-white/20 hover:bg-black transition shrink-0"
           >
-            لوحة الإدارة
-          </button>
+            <MessageCircle className="w-4 h-4" />
+            <span>تواصل واتساب</span>
+          </a>
         </div>
       </header>
 
@@ -589,7 +553,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
             </h1>
             <p className="text-sm sm:text-base text-white/85 leading-relaxed max-w-xl">
               اختر نوع الورد الطبيعي، حدّد العدد واللون وشكل الباقة والتغليف والهدية
-              المناسبة، واحصل على السعر الإجمالي مباشرة وأرسل طلبك خلال ثوانٍ.
+              المناسبة، واحصل على السعر الإجمالي مباشرة مع الدفع عند الاستلام.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <a
@@ -603,7 +567,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                 href="#loyalty"
                 className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#5E1D2F] text-white text-sm font-medium border border-white/20 hover:bg-[#6E2438] transition"
               >
-                <Award className="w-4 h-4" />
+                <Award className="w-4 h-4 text-[#F48FB1]" />
                 <span>بطاقة الولاء</span>
               </a>
             </div>
@@ -655,7 +619,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-              {/* Left 8 Columns: Options */}
+              {/* Left 8 Columns */}
               <div className="lg:col-span-8 space-y-8">
                 {/* 1. Flower selection */}
                 <div className="rounded-2xl bg-[#6E2438] border border-white/15 p-5 sm:p-6 space-y-4">
@@ -685,7 +649,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                                 : 'bg-[#461221] border-white/15 hover:border-white/40'
                             } ${outOfStock ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
                           >
-                            <div className="w-full aspect-[16/10] bg-[#0E0A0C] overflow-hidden">
+                            <div className="relative w-full aspect-[16/10] bg-[#0E0A0C] overflow-hidden">
                               <img
                                 src={imgSrc}
                                 alt={flower.name_ar}
@@ -694,13 +658,23 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                                 }}
                                 className="w-full h-full object-cover"
                               />
+                              {flower.is_featured && (
+                                <span className="absolute top-2.5 right-2.5 px-2.5 py-0.5 rounded-lg bg-[#0E0A0C]/90 border border-white/25 text-[11px] text-[#F8BBD0]">
+                                  مميز
+                                </span>
+                              )}
                             </div>
                             <div className="p-4 flex items-center justify-between gap-2 w-full">
                               <div>
                                 <div className="font-semibold text-white text-base">
                                   {flower.name_ar}
                                 </div>
-                                <div className="text-xs text-white/75 mt-1 tabular-nums-en">
+                                {flower.description_ar && (
+                                  <p className="text-xs text-white/70 mt-0.5 line-clamp-1">
+                                    {flower.description_ar}
+                                  </p>
+                                )}
+                                <div className="text-xs text-white/80 mt-1 tabular-nums-en">
                                   {outOfStock
                                     ? 'نفذت الكمية'
                                     : `${formatIqd(flower.price_iqd)} / وردة`}
@@ -721,7 +695,6 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
 
                 {/* 2. Quantity, Color, Shape */}
                 <div className="rounded-2xl bg-[#6E2438] border border-white/15 p-5 sm:p-6 space-y-6">
-                  {/* Quantity */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-lg font-semibold text-white">2. عدد الورد</h3>
@@ -773,7 +746,6 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                     </div>
                   </div>
 
-                  {/* Color */}
                   <div className="space-y-3 pt-2 border-t border-white/15">
                     <h3 className="text-lg font-semibold text-white">3. لون الباقة</h3>
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
@@ -797,7 +769,6 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                     </div>
                   </div>
 
-                  {/* Shape */}
                   <div className="space-y-3 pt-2 border-t border-white/15">
                     <h3 className="text-lg font-semibold text-white">4. شكل الباقة</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
@@ -912,8 +883,8 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                 </div>
               </div>
 
-              {/* Right 4 Columns: Live Summary & Customer Form */}
-              <aside className="lg:col-span-4 lg:sticky lg:top-24 rounded-2xl bg-[#0E0A0C] border border-white/25 p-5 sm:p-6 space-y-6">
+              {/* Right 4 Columns: Live Summary & Customer Form (Cash on Delivery ONLY, No Email) */}
+              <aside className="lg:col-span-4 lg:sticky lg:top-24 rounded-2xl bg-[#0E0A0C] border border-white/25 p-5 sm:p-6 space-y-5">
                 <div className="space-y-3 border-b border-white/15 pb-4">
                   <h3 className="text-xl font-bold text-white">ملخص الباقة</h3>
                   <div className="space-y-2 text-sm text-white/85">
@@ -954,10 +925,9 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                   </div>
                 </div>
 
-                {/* Customer Form: Name, Phone, Birth Date ONLY */}
-                <form onSubmit={handleSubmitOrder} className="space-y-4">
+                <form onSubmit={handleSubmitOrder} className="space-y-3.5">
                   <div>
-                    <label htmlFor="customer-name" className="block text-sm font-medium text-white mb-1.5">
+                    <label htmlFor="customer-name" className="block text-xs font-medium text-white mb-1">
                       الاسم الكامل
                     </label>
                     <input
@@ -971,33 +941,98 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                     />
                   </div>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3">
+                    <div>
+                      <label htmlFor="customer-phone" className="block text-xs font-medium text-white mb-1">
+                        رقم الهاتف
+                      </label>
+                      <input
+                        id="customer-phone"
+                        type="tel"
+                        dir="ltr"
+                        required
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        placeholder="0776 000 0000"
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/50 text-sm text-right focus:outline-none focus:border-white tabular-nums-en"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="customer-birthdate" className="block text-xs font-medium text-white mb-1">
+                        تاريخ الميلاد
+                      </label>
+                      <input
+                        id="customer-birthdate"
+                        type="date"
+                        value={customerBirthDate}
+                        onChange={(e) => setCustomerBirthDate(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm focus:outline-none focus:border-white tabular-nums-en"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="customer-city" className="block text-xs text-white/85 mb-1">
+                        المدينة / المنطقة
+                      </label>
+                      <input
+                        id="customer-city"
+                        type="text"
+                        value={cityArea}
+                        onChange={(e) => setCityArea(e.target.value)}
+                        placeholder="كربلاء / حي الميلاد"
+                        className="w-full px-3 py-2 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/45 text-xs focus:outline-none focus:border-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="customer-landmark" className="block text-xs text-white/85 mb-1">
+                        أقرب نقطة دالة
+                      </label>
+                      <input
+                        id="customer-landmark"
+                        type="text"
+                        value={nearestLandmark}
+                        onChange={(e) => setNearestLandmark(e.target.value)}
+                        placeholder="مثال: مجاور كوفي الدرة"
+                        className="w-full px-3 py-2 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/45 text-xs focus:outline-none focus:border-white"
+                      />
+                    </div>
+                  </div>
+
                   <div>
-                    <label htmlFor="customer-phone" className="block text-sm font-medium text-white mb-1.5">
-                      رقم الهاتف
+                    <label htmlFor="customer-address" className="block text-xs text-white/85 mb-1">
+                      عنوان التوصيل
                     </label>
                     <input
-                      id="customer-phone"
-                      type="tel"
-                      dir="ltr"
-                      required
-                      value={customerPhone}
-                      onChange={(e) => setCustomerPhone(e.target.value)}
-                      placeholder="0770 000 0000"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/50 text-sm text-right focus:outline-none focus:border-white tabular-nums-en"
+                      id="customer-address"
+                      type="text"
+                      value={deliveryAddress}
+                      onChange={(e) => setDeliveryAddress(e.target.value)}
+                      placeholder="تفاصيل العنوان أو استلام من المتجر"
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/45 text-xs focus:outline-none focus:border-white"
                     />
                   </div>
 
                   <div>
-                    <label htmlFor="customer-birthdate" className="block text-sm font-medium text-white mb-1.5">
-                      تاريخ الميلاد
+                    <label htmlFor="customer-notes" className="block text-xs text-white/85 mb-1">
+                      ملاحظات الطلب / عبارة الكارت
                     </label>
                     <input
-                      id="customer-birthdate"
-                      type="date"
-                      value={customerBirthDate}
-                      onChange={(e) => setCustomerBirthDate(e.target.value)}
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm focus:outline-none focus:border-white tabular-nums-en"
+                      id="customer-notes"
+                      type="text"
+                      value={orderNotes}
+                      onChange={(e) => setOrderNotes(e.target.value)}
+                      placeholder="اختياري..."
+                      className="w-full px-3.5 py-2 rounded-xl bg-[#461221] border border-white/20 text-white placeholder:text-white/45 text-xs focus:outline-none focus:border-white"
                     />
+                  </div>
+
+                  {/* Cash on Delivery ONLY */}
+                  <div className="p-3 rounded-xl bg-[#461221] border border-white/20 flex items-center gap-2.5 text-xs text-white">
+                    <Banknote className="w-4 h-4 shrink-0" />
+                    <span>طريقة الدفع: الدفع نقداً عند الاستلام فقط</span>
                   </div>
 
                   {orderError && (
@@ -1032,7 +1067,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
           )}
         </section>
 
-        {/* Section 2: Loyalty Card */}
+        {/* Section 2: Loyalty Card (Subtle Pink Accent Preserved on Stamps) */}
         <section
           id="loyalty"
           className="scroll-mt-20 rounded-2xl bg-[#461221] border border-white/15 p-6 sm:p-8 space-y-6"
@@ -1054,7 +1089,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                 dir="ltr"
                 value={loyaltyPhoneInput}
                 onChange={(e) => setLoyaltyPhoneInput(e.target.value)}
-                placeholder="أدخل رقم الهاتف (مثال: 07701234567)"
+                placeholder="أدخل رقم الهاتف (مثال: 07762963674)"
                 className="flex-1 px-4 py-2.5 rounded-xl bg-[#0E0A0C] border border-white/25 text-white placeholder:text-white/50 text-sm text-right focus:outline-none focus:border-white tabular-nums-en"
               />
               <button
@@ -1077,7 +1112,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
           {loyaltySearched && !loyaltyLoading && !loyaltyError && (
             <div className="space-y-6 pt-2 border-t border-white/15">
               {loyaltyCustomer ? (
-                <div className="rounded-2xl bg-[#0E0A0C] border border-white/20 p-5 sm:p-6 space-y-5">
+                <div className="rounded-2xl bg-[#0E0A0C] border border-[#F48FB1]/40 p-5 sm:p-6 space-y-5">
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div>
                       <div className="text-lg font-bold text-white">
@@ -1089,26 +1124,33 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                     </div>
                     <div className="text-left sm:text-right">
                       <div className="text-xs text-white/70">عدد الأختام</div>
-                      <div className="text-2xl font-bold text-white tabular-nums-en">
+                      <div className="text-2xl font-bold text-[#F48FB1] tabular-nums-en">
                         {Math.min(10, Math.max(0, loyaltyCustomer.stamps_count ?? 0))} / 10
                       </div>
                     </div>
                   </div>
 
-                  {/* 10 Stamp Grid */}
+                  {/* 10 Stamp Grid with Pink Loyalty Stamp Accent */}
                   <div className="grid grid-cols-5 sm:grid-cols-10 gap-2.5">
                     {Array.from({ length: 10 }, (_, idx) => {
                       const filled = idx < (loyaltyCustomer.stamps_count ?? 0);
+                      const isTenthReward = idx === 9;
                       return (
                         <div
                           key={idx}
                           className={`aspect-square rounded-xl border flex flex-col items-center justify-center gap-1 transition ${
                             filled
-                              ? 'bg-[#5E1D2F] border-white text-white'
+                              ? 'bg-[#5E1D2F] border-[#F48FB1] text-[#F8BBD0]'
+                              : isTenthReward
+                              ? 'bg-[#461221]/60 border-[#F48FB1]/35 text-[#F48FB1]/70'
                               : 'bg-[#461221]/40 border-white/15 text-white/40'
                           }`}
                         >
-                          <Flower2 className="w-4 h-4" />
+                          {isTenthReward ? (
+                            <Gift className="w-4 h-4" />
+                          ) : (
+                            <Flower2 className="w-4 h-4" />
+                          )}
                           <span className="text-[11px] tabular-nums-en">{idx + 1}</span>
                         </div>
                       );
@@ -1121,7 +1163,6 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                 </div>
               )}
 
-              {/* Customer Order History */}
               <div className="space-y-3">
                 <h3 className="text-base font-semibold text-white">سجل الطلبات</h3>
                 {loyaltyOrders.length === 0 ? (
@@ -1145,7 +1186,7 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                             {formatIqd(ord.total_price_iqd)}
                           </span>
                           <span className="px-2.5 py-1 rounded-lg bg-[#0E0A0C] border border-white/20 text-xs text-white">
-                            {STATUS_LABELS[ord.status] ?? ord.status}
+                            {ADMIN_STATUS_LABELS[ord.status] ?? ord.status}
                           </span>
                         </div>
                       </div>
@@ -1158,663 +1199,112 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
         </section>
       </main>
 
-      {/* Footer: Address, Working Hours & Google Map */}
+      {/* Footer: Store Info, Official Phones, WhatsApp, Instagram, Map, and Discreet "دخول الإدارة" */}
       <footer id="location" className="bg-[#0E0A0C] border-t border-white/15 mt-12">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          <div className="lg:col-span-5 space-y-5">
-            <div>
-              <h2 className="text-2xl font-bold text-white">{settings.shop_name}</h2>
-              <p className="text-sm text-white/75 mt-1">
-                زورونا لاختيار أرقى باقات الورد والهدايا الفاخرة
-              </p>
-            </div>
-
-            <div className="space-y-3.5 text-sm text-white/90">
-              <div className="flex items-start gap-3">
-                <MapPin className="w-5 h-5 text-white shrink-0 mt-0.5" />
-                <div>
-                  <div className="text-xs text-white/60">العنوان</div>
-                  <div className="mt-0.5 leading-relaxed">{settings.address}</div>
-                </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 space-y-10">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            <div className="lg:col-span-5 space-y-5">
+              <div>
+                <h2 className="text-2xl font-bold text-white">{settings.shop_name}</h2>
+                <p className="text-sm text-white/75 mt-1">
+                  زورونا أو تواصلوا معنا عبر الهاتف والواتساب والإنستغرام
+                </p>
               </div>
 
-              <div className="flex items-start gap-3">
-                <Clock className="w-5 h-5 text-white shrink-0 mt-0.5" />
-                <div>
-                  <div className="text-xs text-white/60">ساعات العمل</div>
-                  <div className="mt-0.5 leading-relaxed">{settings.working_hours}</div>
-                </div>
-              </div>
-
-              {settings.phone_numbers && (
+              <div className="space-y-3.5 text-sm text-white/90">
                 <div className="flex items-start gap-3">
-                  <Phone className="w-5 h-5 text-white shrink-0 mt-0.5" />
+                  <MapPin className="w-5 h-5 text-white shrink-0 mt-0.5" />
                   <div>
-                    <div className="text-xs text-white/60">الهاتف</div>
-                    <div className="mt-0.5 tabular-nums-en" dir="ltr">
-                      {settings.phone_numbers}
-                    </div>
+                    <div className="text-xs text-white/60">العنوان</div>
+                    <div className="mt-0.5 leading-relaxed">{settings.address}</div>
                   </div>
                 </div>
-              )}
 
-              <div className="pt-2 flex flex-wrap gap-2.5">
-                <a
-                  href={mapsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#5E1D2F] border border-white/25 text-white text-xs font-medium hover:bg-[#6E2438] transition"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  <span>فتح في خرائط Google</span>
-                </a>
-                {settings.instagram_url && (
+                <div className="flex items-start gap-3">
+                  <Clock className="w-5 h-5 text-white shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-xs text-white/60">ساعات العمل</div>
+                    <div className="mt-0.5 leading-relaxed">{settings.working_hours}</div>
+                  </div>
+                </div>
+
+                {/* Official Phone Call & WhatsApp Buttons */}
+                <div className="space-y-2.5 pt-1">
+                  <div className="text-xs text-white/60">أرقام التواصل والواتساب</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {phoneNumbers.map((num) => (
+                      <a
+                        key={`tel-${num}`}
+                        href={`tel:${num}`}
+                        className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-xs font-medium hover:bg-[#5E1D2F] transition tabular-nums-en"
+                      >
+                        <Phone className="w-4 h-4 shrink-0" />
+                        <span dir="ltr">{num}</span>
+                      </a>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {whatsappNumbers.map((num) => (
+                      <a
+                        key={`wa-${num}`}
+                        href={formatWhatsAppUrl(num)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-[#5E1D2F] border border-white/25 text-white text-xs font-medium hover:bg-[#6E2438] transition tabular-nums-en"
+                      >
+                        <MessageCircle className="w-4 h-4 shrink-0" />
+                        <span>واتساب</span>
+                        <span dir="ltr">{num}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="pt-1 flex flex-wrap gap-2.5">
                   <a
-                    href={settings.instagram_url}
+                    href={instagramUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#461221] border border-white/20 text-white text-xs font-medium hover:bg-[#5E1D2F] transition"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-xs font-medium hover:bg-[#5E1D2F] transition"
                   >
                     <Instagram className="w-4 h-4" />
-                    <span>حساب الانستغرام</span>
+                    <span>إنستغرام SEDO</span>
                   </a>
-                )}
+                  <a
+                    href={mapsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#5E1D2F] border border-white/25 text-white text-xs font-medium hover:bg-[#6E2438] transition"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    <span>فتح في خرائط Google</span>
+                  </a>
+                </div>
               </div>
+            </div>
+
+            <div className="lg:col-span-7">
+              <StoreLocationMap
+                shopName={settings.shop_name}
+                address={settings.address}
+                mapsUrl={mapsUrl}
+              />
             </div>
           </div>
 
-          <div className="lg:col-span-7">
-            <StoreLocationMap
-              shopName={settings.shop_name}
-              address={settings.address}
-              mapsUrl={mapsUrl}
-            />
+          {/* Discreet Admin Entry Link at the Very Bottom of the Footer */}
+          <div className="pt-6 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-white/60">
+            <span>© {new Date().getFullYear()} {settings.shop_name} — جميع الحقوق محفوظة</span>
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="text-xs text-white/65 hover:text-white transition cursor-pointer underline-offset-4 hover:underline"
+            >
+              دخول الإدارة
+            </button>
           </div>
         </div>
       </footer>
-    </div>
-  );
-}
-
-function AdminPage({ onBackHome }: { onBackHome: () => void }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-
-  // Email + Password login only
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-
-  // Admin data
-  const [orders, setOrders] = useState<OrderRow[]>([]);
-  const [products, setProducts] = useState<ProductRow[]>([]);
-  const [productDrafts, setProductDrafts] = useState<Record<string, ProductDraft>>({});
-  const [loadingData, setLoadingData] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [busyOrderId, setBusyOrderId] = useState<string | null>(null);
-  const [busyProductId, setBusyProductId] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      setSession(data.session ?? null);
-      setAuthReady(true);
-    });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setAuthReady(true);
-    });
-
-    return () => {
-      active = false;
-      listener.subscription.unsubscribe();
-    };
-  }, []);
-
-  const loadAdminData = useCallback(async () => {
-    setLoadingData(true);
-    setActionError(null);
-    const [ordersRes, productsRes] = await Promise.all([
-      supabase.from('orders').select('*').order('created_at', { ascending: false }),
-      supabase.from('products').select('*').order('created_at', { ascending: true }),
-    ]);
-
-    if (ordersRes.error) {
-      setActionError(`تعذّر جلب الطلبات: ${ordersRes.error.message}`);
-    } else {
-      setOrders((ordersRes.data ?? []) as OrderRow[]);
-    }
-
-    if (productsRes.error) {
-      setActionError(`تعذّر جلب المنتجات: ${productsRes.error.message}`);
-    } else {
-      const list = (productsRes.data ?? []) as ProductRow[];
-      setProducts(list);
-      const drafts: Record<string, ProductDraft> = {};
-      for (const item of list) {
-        drafts[item.id] = {
-          price_iqd: String(item.price_iqd),
-          stock_quantity: String(item.stock_quantity),
-          is_active: item.is_active,
-        };
-      }
-      setProductDrafts(drafts);
-    }
-
-    setLoadingData(false);
-  }, []);
-
-  useEffect(() => {
-    if (session) {
-      loadAdminData();
-    }
-  }, [session, loadAdminData]);
-
-  const handleLogin = async (e: FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    setAuthLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-    if (error) {
-      setAuthError(translateAuthError(error.message));
-    }
-    setAuthLoading(false);
-  };
-
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    setOrders([]);
-    setProducts([]);
-  };
-
-  const handleOrderStatus = async (orderId: string, status: OrderStatus) => {
-    setBusyOrderId(orderId);
-    setActionError(null);
-    setActionMessage(null);
-    const { error } = await supabase.from('orders').update({ status }).eq('id', orderId);
-    if (error) {
-      setActionError(`فشل تحديث حالة الطلب: ${error.message}`);
-    } else {
-      setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status } : o)));
-      setActionMessage(`تم تحديث حالة الطلب إلى: ${STATUS_LABELS[status]}`);
-    }
-    setBusyOrderId(null);
-  };
-
-  const handleAddStamp = async (order: OrderRow) => {
-    setBusyOrderId(order.id);
-    setActionError(null);
-    setActionMessage(null);
-
-    try {
-      const normalized = normalizePhone(order.customer_phone);
-      let customer: CustomerRow | null = null;
-
-      if (order.customer_id) {
-        const res = await supabase
-          .from('customers')
-          .select('*')
-          .eq('id', order.customer_id)
-          .maybeSingle();
-        customer = (res.data as CustomerRow | null) ?? null;
-      }
-
-      if (!customer && normalized) {
-        const res = await supabase
-          .from('customers')
-          .select('*')
-          .eq('phone', normalized)
-          .maybeSingle();
-        customer = (res.data as CustomerRow | null) ?? null;
-      }
-
-      if (!customer) {
-        const created = await supabase
-          .from('customers')
-          .insert({
-            full_name: order.customer_name,
-            phone: normalized || order.customer_phone,
-            birth_date: order.customer_birth_date ?? null,
-            stamps_count: 0,
-            total_orders: 1,
-          })
-          .select('*')
-          .single();
-
-        if (created.error) {
-          setActionError(`تعذّر إنشاء سجل الزبون للختم: ${created.error.message}`);
-          setBusyOrderId(null);
-          return;
-        }
-        customer = created.data as CustomerRow;
-      }
-
-      const currentStamps = customer.stamps_count ?? 0;
-      if (currentStamps >= 10) {
-        setActionMessage(`الزبون ${customer.full_name} مكتمل الأختام بالفعل (10 / 10).`);
-        setBusyOrderId(null);
-        return;
-      }
-
-      const nextStamps = nextStampCount(currentStamps, 10);
-
-      const updateRes = await supabase
-        .from('customers')
-        .update({ stamps_count: nextStamps })
-        .eq('id', customer.id);
-
-      if (updateRes.error) {
-        setActionError(`فشل تحديث عداد الأختام: ${updateRes.error.message}`);
-        setBusyOrderId(null);
-        return;
-      }
-
-      const logRes = await supabase.from('loyalty_logs').insert({
-        customer_id: customer.id,
-        order_id: order.id,
-        action: 'add_stamp',
-        notes: `إضافة ختم ولاء (${currentStamps} -> ${nextStamps})`,
-      });
-
-      if (logRes.error) {
-        setActionError(
-          `تمت زيادة الأختام إلى ${nextStamps}/10 ولكن تعذّر تسجيل loyalty_logs: ${logRes.error.message}`
-        );
-      } else {
-        setActionMessage(
-          `تمت إضافة ختم للزبون ${customer.full_name} (الأختام الآن: ${nextStamps} / 10).`
-        );
-      }
-    } finally {
-      setBusyOrderId(null);
-    }
-  };
-
-  const updateDraft = (productId: string, patch: Partial<ProductDraft>) => {
-    setProductDrafts((prev) => ({
-      ...prev,
-      [productId]: {
-        ...prev[productId],
-        ...patch,
-      },
-    }));
-  };
-
-  const handleSaveProduct = async (productId: string) => {
-    const draft = productDrafts[productId];
-    if (!draft) return;
-
-    const price = Math.max(0, Math.round(Number(draft.price_iqd) || 0));
-    const stock = Math.max(0, Math.round(Number(draft.stock_quantity) || 0));
-
-    setBusyProductId(productId);
-    setActionError(null);
-    setActionMessage(null);
-
-    const { error } = await supabase
-      .from('products')
-      .update({
-        price_iqd: price,
-        stock_quantity: stock,
-        is_active: draft.is_active,
-      })
-      .eq('id', productId);
-
-    if (error) {
-      setActionError(`تعذّر حفظ المنتج: ${error.message}`);
-    } else {
-      setProducts((prev) =>
-        prev.map((p) =>
-          p.id === productId
-            ? { ...p, price_iqd: price, stock_quantity: stock, is_active: draft.is_active }
-            : p
-        )
-      );
-      setActionMessage('تم حفظ تعديلات المنتج في قاعدة البيانات.');
-    }
-    setBusyProductId(null);
-  };
-
-  if (!authReady) {
-    return (
-      <div
-        dir="rtl"
-        className="min-h-screen bg-[#5E1D2F] text-white flex items-center justify-center p-6"
-      >
-        <div className="text-sm text-white/80">جاري التحقق من الجلسة...</div>
-      </div>
-    );
-  }
-
-  if (!session) {
-    return (
-      <div
-        dir="rtl"
-        className="min-h-screen bg-[#5E1D2F] text-white flex items-center justify-center p-4"
-      >
-        <div className="w-full max-w-md rounded-2xl bg-[#461221] border border-white/20 p-6 sm:p-8 space-y-6">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#0E0A0C] border border-white/20 flex items-center justify-center">
-                <ShieldCheck className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-white">إدارة SEDO</h1>
-                <p className="text-xs text-white/75">تسجيل الدخول عبر Supabase Auth</p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onBackHome}
-              className="text-xs text-white/80 hover:text-white underline cursor-pointer"
-            >
-              المتجر
-            </button>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label htmlFor="admin-email" className="block text-sm font-medium text-white mb-1.5">
-                البريد الإلكتروني
-              </label>
-              <input
-                id="admin-email"
-                type="email"
-                dir="ltr"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@sedoflowers.com"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E0A0C] border border-white/25 text-white placeholder:text-white/45 text-sm text-left focus:outline-none focus:border-white"
-              />
-            </div>
-
-            <div>
-              <label htmlFor="admin-password" className="block text-sm font-medium text-white mb-1.5">
-                كلمة المرور
-              </label>
-              <input
-                id="admin-password"
-                type="password"
-                dir="ltr"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E0A0C] border border-white/25 text-white placeholder:text-white/45 text-sm text-left focus:outline-none focus:border-white"
-              />
-            </div>
-
-            {authError && (
-              <div className="p-3 rounded-xl bg-[#0E0A0C] border border-white/40 text-xs text-white">
-                {authError}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={authLoading}
-              className="w-full py-3 rounded-xl bg-[#0E0A0C] hover:bg-black disabled:opacity-50 text-white font-semibold text-sm border border-white/25 transition cursor-pointer"
-            >
-              {authLoading ? 'جاري تسجيل الدخول...' : 'تسجيل الدخول'}
-            </button>
-          </form>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div dir="rtl" className="min-h-screen bg-[#5E1D2F] text-white">
-      <header className="bg-[#461221] border-b border-white/15">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold text-white">لوحة إدارة SEDO</h1>
-            <p className="text-xs text-white/75 mt-0.5" dir="ltr">
-              {session.user.email}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={loadAdminData}
-              disabled={loadingData}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0E0A0C] border border-white/20 text-xs font-medium text-white hover:bg-black transition cursor-pointer"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingData ? 'animate-spin' : ''}`} />
-              <span>تحديث</span>
-            </button>
-            <button
-              type="button"
-              onClick={onBackHome}
-              className="px-3.5 py-2 rounded-xl bg-[#6E2438] border border-white/20 text-xs font-medium text-white hover:bg-[#7C2C42] transition cursor-pointer"
-            >
-              عرض المتجر
-            </button>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0E0A0C] border border-white/20 text-xs font-medium text-white hover:bg-black transition cursor-pointer"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>خروج</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-10">
-        {actionError && (
-          <div className="rounded-xl bg-[#0E0A0C] border border-white/40 p-4 text-sm text-white">
-            {actionError}
-          </div>
-        )}
-        {actionMessage && (
-          <div className="rounded-xl bg-[#461221] border border-white/40 p-4 text-sm text-white">
-            {actionMessage}
-          </div>
-        )}
-
-        {/* Orders Table */}
-        <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-xl font-bold text-white">الطلبات ({orders.length})</h2>
-          </div>
-
-          {orders.length === 0 ? (
-            <p className="text-sm text-white/75 py-4">لا توجد طلبات مسجلة حالياً.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-sm border-collapse min-w-[820px]">
-                <thead>
-                  <tr className="border-b border-white/15 text-xs text-white/75">
-                    <th className="py-3 px-3 font-medium">الطلب / التاريخ</th>
-                    <th className="py-3 px-3 font-medium">الزبون</th>
-                    <th className="py-3 px-3 font-medium">تفاصيل الباقة</th>
-                    <th className="py-3 px-3 font-medium">الإجمالي</th>
-                    <th className="py-3 px-3 font-medium">الحالة</th>
-                    <th className="py-3 px-3 font-medium">الإجراءات</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/10">
-                  {orders.map((order) => {
-                    const isBusy = busyOrderId === order.id;
-                    return (
-                      <tr key={order.id} className="align-top">
-                        <td className="py-3.5 px-3 tabular-nums-en">
-                          <div className="font-semibold text-white">#{order.id.slice(0, 8)}</div>
-                          <div className="text-xs text-white/65 mt-0.5">
-                            {formatDateTimeEn(order.created_at)}
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-3">
-                          <div className="font-medium text-white">{order.customer_name}</div>
-                          <div className="text-xs text-white/75 tabular-nums-en mt-0.5" dir="ltr">
-                            {order.customer_phone}
-                          </div>
-                          {order.customer_birth_date && (
-                            <div className="text-xs text-white/60 tabular-nums-en mt-0.5">
-                              الميلاد: {order.customer_birth_date}
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3.5 px-3 text-xs text-white/85 max-w-xs leading-relaxed">
-                          {formatOrderDetailsText(order.order_details)}
-                        </td>
-                        <td className="py-3.5 px-3 font-semibold text-white tabular-nums-en whitespace-nowrap">
-                          {formatIqd(order.total_price_iqd)}
-                        </td>
-                        <td className="py-3.5 px-3 whitespace-nowrap">
-                          <span className="inline-block px-2.5 py-1 rounded-lg bg-[#0E0A0C] border border-white/20 text-xs text-white">
-                            {STATUS_LABELS[order.status] ?? order.status}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-3">
-                          <div className="flex flex-wrap gap-1.5">
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleOrderStatus(order.id, 'confirmed')}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/20 text-xs text-white hover:bg-black disabled:opacity-50 cursor-pointer"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                              <span>تأكيد</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleOrderStatus(order.id, 'completed')}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#5E1D2F] border border-white/25 text-xs text-white hover:bg-[#6E2438] disabled:opacity-50 cursor-pointer"
-                            >
-                              <PackageCheck className="w-3.5 h-3.5" />
-                              <span>إكمال</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleOrderStatus(order.id, 'cancelled')}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/20 text-xs text-white/85 hover:bg-black disabled:opacity-50 cursor-pointer"
-                            >
-                              <XCircle className="w-3.5 h-3.5" />
-                              <span>إلغاء</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={isBusy}
-                              onClick={() => handleAddStamp(order)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/40 text-xs font-semibold text-white hover:bg-black disabled:opacity-50 cursor-pointer"
-                            >
-                              <Award className="w-3.5 h-3.5" />
-                              <span>إضافة ختم</span>
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-
-        {/* Simple Products Table */}
-        <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
-          <h2 className="text-xl font-bold text-white">المنتجات ({products.length})</h2>
-          {products.length === 0 ? (
-            <p className="text-sm text-white/75 py-4">لا توجد منتجات في قاعدة البيانات.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-right text-sm border-collapse min-w-[700px]">
-                <thead>
-                  <tr className="border-b border-white/15 text-xs text-white/75">
-                    <th className="py-3 px-3 font-medium">المنتج</th>
-                    <th className="py-3 px-3 font-medium">التصنيف</th>
-                    <th className="py-3 px-3 font-medium">السعر (د.ع)</th>
-                    <th className="py-3 px-3 font-medium">الكمية</th>
-                    <th className="py-3 px-3 font-medium">التفعيل</th>
-                    <th className="py-3 px-3 font-medium">حفظ</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/10">
-                  {products.map((product) => {
-                    const draft = productDrafts[product.id] ?? {
-                      price_iqd: String(product.price_iqd),
-                      stock_quantity: String(product.stock_quantity),
-                      is_active: product.is_active,
-                    };
-                    const isSaving = busyProductId === product.id;
-
-                    return (
-                      <tr key={product.id}>
-                        <td className="py-3 px-3 font-medium text-white">{product.name_ar}</td>
-                        <td className="py-3 px-3 text-xs text-white/75">
-                          {CATEGORY_LABELS[product.category] ?? product.category}
-                        </td>
-                        <td className="py-3 px-3">
-                          <input
-                            type="number"
-                            min={0}
-                            step={250}
-                            value={draft.price_iqd}
-                            onChange={(e) =>
-                              updateDraft(product.id, { price_iqd: e.target.value })
-                            }
-                            className="w-28 px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/20 text-white text-sm tabular-nums-en focus:outline-none focus:border-white"
-                          />
-                        </td>
-                        <td className="py-3 px-3">
-                          <input
-                            type="number"
-                            min={0}
-                            value={draft.stock_quantity}
-                            onChange={(e) =>
-                              updateDraft(product.id, { stock_quantity: e.target.value })
-                            }
-                            className="w-24 px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/20 text-white text-sm tabular-nums-en focus:outline-none focus:border-white"
-                          />
-                        </td>
-                        <td className="py-3 px-3">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateDraft(product.id, { is_active: !draft.is_active })
-                            }
-                            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition cursor-pointer ${
-                              draft.is_active
-                                ? 'bg-[#5E1D2F] border-white/40 text-white'
-                                : 'bg-[#0E0A0C] border-white/20 text-white/60'
-                            }`}
-                          >
-                            {draft.is_active ? 'مفعّل' : 'متوقف'}
-                          </button>
-                        </td>
-                        <td className="py-3 px-3">
-                          <button
-                            type="button"
-                            disabled={isSaving}
-                            onClick={() => handleSaveProduct(product.id)}
-                            className="px-3.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/25 text-xs font-semibold text-white hover:bg-black disabled:opacity-50 cursor-pointer"
-                          >
-                            {isSaving ? 'جاري الحفظ...' : 'حفظ'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </main>
     </div>
   );
 }
