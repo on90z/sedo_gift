@@ -4,11 +4,13 @@ import {
   AlertTriangle,
   Award,
   BarChart3,
+  BellRing,
   Calendar,
   Check,
   CheckCircle2,
   ClipboardList,
   Clock,
+  Crosshair,
   Edit3,
   Eye,
   FileText,
@@ -42,6 +44,10 @@ import { supabase } from '../supabaseclient.tsx';
 import {
   computeCustomerSummaries,
   computeDailyOrderStats,
+  DEFAULT_PROMO_NOTIFICATION_TEXT,
+  DEFAULT_PROMO_RADIUS_METERS,
+  DEFAULT_SHOP_LAT,
+  DEFAULT_SHOP_LNG,
   extractOrderMeta,
   formatIqd,
   formatOrderDetailsText,
@@ -188,6 +194,10 @@ export function AdminDashboard({
     loyalty_reward_type: 'gift',
     loyalty_reward_value: 'باقة أو هدية مجانية على الطلب العاشر',
     cash_only: true,
+    shop_lat: DEFAULT_SHOP_LAT,
+    shop_lng: DEFAULT_SHOP_LNG,
+    promo_radius_meters: DEFAULT_PROMO_RADIUS_METERS,
+    promo_notification_text: DEFAULT_PROMO_NOTIFICATION_TEXT,
   });
 
   // Orders & Today's Orders Filters
@@ -258,6 +268,7 @@ export function AdminDashboard({
   // Store & Contact Settings Drafts
   const [settingsDraft, setSettingsDraft] = useState<StoreSettingsRow>(settings);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [locatingShopCoords, setLocatingShopCoords] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -381,6 +392,11 @@ export function AdminDashboard({
         loyalty_reward_value:
           s.loyalty_reward_value ?? 'باقة أو هدية مجانية على الطلب العاشر',
         cash_only: true,
+        shop_lat: s.shop_lat ?? DEFAULT_SHOP_LAT,
+        shop_lng: s.shop_lng ?? DEFAULT_SHOP_LNG,
+        promo_radius_meters: s.promo_radius_meters ?? DEFAULT_PROMO_RADIUS_METERS,
+        promo_notification_text:
+          s.promo_notification_text ?? DEFAULT_PROMO_NOTIFICATION_TEXT,
       };
       setSettings(merged);
       setSettingsDraft(merged);
@@ -1051,12 +1067,52 @@ export function AdminDashboard({
     await loadAllAdminData();
   };
 
-  // Save Store Settings & Contact Information
+  const handleCaptureCurrentShopLocation = () => {
+    setActionError(null);
+    setActionMessage(null);
+    if (!('geolocation' in navigator)) {
+      setActionError('المتصفح الحالي لا يدعم تحديد الموقع الجغرافي.');
+      return;
+    }
+    setLocatingShopCoords(true);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = Number(position.coords.latitude.toFixed(6));
+        const lng = Number(position.coords.longitude.toFixed(6));
+        setSettingsDraft((s) => ({
+          ...s,
+          shop_lat: lat,
+          shop_lng: lng,
+          google_maps_url: `https://maps.google.com/?q=${lat},${lng}`,
+        }));
+        setActionMessage(`تم التقاط إحداثيات موقعك الحالي بنجاح (${lat}, ${lng}). اضغط حفظ الإعدادات لتأكيدها.`);
+        setLocatingShopCoords(false);
+      },
+      (err) => {
+        setActionError(
+          err.code === err.PERMISSION_DENIED
+            ? 'تم رفض إذن الموقع. يرجى السماح بالوصول للموقع ثم المحاولة مجدداً.'
+            : 'تعذّر التقاط الموقع الحالي حالياً. يرجى التأكد من تفعيل GPS.'
+        );
+        setLocatingShopCoords(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  // Save Store Settings & Contact Information (including Proximity Geofencing)
   const handleSaveSettings = async (e: FormEvent) => {
     e.preventDefault();
     setSavingSettings(true);
     setActionError(null);
     setActionMessage(null);
+
+    const parsedLat = Number(settingsDraft.shop_lat);
+    const parsedLng = Number(settingsDraft.shop_lng);
+    const parsedRadius = Math.max(
+      50,
+      Math.round(Number(settingsDraft.promo_radius_meters) || DEFAULT_PROMO_RADIUS_METERS)
+    );
 
     const fullUpdate = {
       shop_name: settingsDraft.shop_name.trim(),
@@ -1078,6 +1134,11 @@ export function AdminDashboard({
       loyalty_reward_value:
         settingsDraft.loyalty_reward_value?.trim() || 'باقة أو هدية مجانية على الطلب العاشر',
       cash_only: true,
+      shop_lat: Number.isFinite(parsedLat) ? parsedLat : DEFAULT_SHOP_LAT,
+      shop_lng: Number.isFinite(parsedLng) ? parsedLng : DEFAULT_SHOP_LNG,
+      promo_radius_meters: parsedRadius,
+      promo_notification_text:
+        settingsDraft.promo_notification_text?.trim() || DEFAULT_PROMO_NOTIFICATION_TEXT,
     };
 
     let { error } = await supabase
@@ -1107,9 +1168,12 @@ export function AdminDashboard({
       await writeAuditLog('update_store_settings', 'store_settings', String(settings.id), {
         shop_name: fullUpdate.shop_name,
         phone_numbers: fullUpdate.phone_numbers,
+        promo_radius_meters: fullUpdate.promo_radius_meters,
+        shop_lat: fullUpdate.shop_lat,
+        shop_lng: fullUpdate.shop_lng,
       });
       setSettings({ ...settingsDraft, ...fullUpdate });
-      setActionMessage('تم حفظ إعدادات المتجر ومعلومات التواصل في Supabase بنجاح.');
+      setActionMessage('تم حفظ إعدادات المتجر، القرب الجغرافي، ومعلومات التواصل في Supabase بنجاح.');
     }
     setSavingSettings(false);
   };
@@ -2258,6 +2322,107 @@ export function AdminDashboard({
                         }
                         className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E0A0C] border border-white/20 text-white text-sm"
                       />
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl bg-[#0E0A0C] border border-[#F48FB1]/30 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <BellRing className="w-4 h-4 text-[#F48FB1] shrink-0" />
+                        <h3 className="text-sm font-bold text-white">
+                          إشعارات الاقتراب من المحل والنطاق الجغرافي (Geofencing)
+                        </h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCaptureCurrentShopLocation}
+                        disabled={locatingShopCoords}
+                        className="inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-[#5E1D2F] hover:bg-[#6E2438] border border-white/25 text-xs font-semibold text-white transition cursor-pointer shrink-0"
+                      >
+                        <Crosshair className="w-3.5 h-3.5 text-[#F8BBD0]" />
+                        <span>
+                          {locatingShopCoords
+                            ? 'جاري التقاط الإحداثيات...'
+                            : 'تحديد موقعي الحالي كإحداثيات للمحل'}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-white/85 mb-1">
+                        نص إشعار الاقتراب من المحل
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={settingsDraft.promo_notification_text ?? ''}
+                        onChange={(e) =>
+                          setSettingsDraft((s) => ({
+                            ...s,
+                            promo_notification_text: e.target.value,
+                          }))
+                        }
+                        placeholder={DEFAULT_PROMO_NOTIFICATION_TEXT}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs text-white/85 mb-1">
+                          نطاق الإشعار بالمتر
+                        </label>
+                        <input
+                          type="number"
+                          min={50}
+                          max={20000}
+                          step={50}
+                          value={settingsDraft.promo_radius_meters ?? DEFAULT_PROMO_RADIUS_METERS}
+                          onChange={(e) =>
+                            setSettingsDraft((s) => ({
+                              ...s,
+                              promo_radius_meters:
+                                Number(e.target.value) || DEFAULT_PROMO_RADIUS_METERS,
+                            }))
+                          }
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm tabular-nums-en"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/85 mb-1">
+                          خط العرض للمحل (Latitude)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          dir="ltr"
+                          value={settingsDraft.shop_lat ?? DEFAULT_SHOP_LAT}
+                          onChange={(e) =>
+                            setSettingsDraft((s) => ({
+                              ...s,
+                              shop_lat: Number(e.target.value),
+                            }))
+                          }
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm tabular-nums-en text-left"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-white/85 mb-1">
+                          خط الطول للمحل (Longitude)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          dir="ltr"
+                          value={settingsDraft.shop_lng ?? DEFAULT_SHOP_LNG}
+                          onChange={(e) =>
+                            setSettingsDraft((s) => ({
+                              ...s,
+                              shop_lng: Number(e.target.value),
+                            }))
+                          }
+                          className="w-full px-3.5 py-2.5 rounded-xl bg-[#461221] border border-white/20 text-white text-sm tabular-nums-en text-left"
+                        />
+                      </div>
                     </div>
                   </div>
 

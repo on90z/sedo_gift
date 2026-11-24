@@ -401,3 +401,85 @@ export function formatOrderDetailsText(raw: unknown): string {
   if (d.gift_name) parts.push(`الهدية: ${d.gift_name}`);
   return parts.length > 0 ? parts.join(' • ') : 'باقة مخصصة';
 }
+
+export const DEFAULT_SHOP_LAT = 32.6027;
+export const DEFAULT_SHOP_LNG = 44.0197;
+export const DEFAULT_PROMO_RADIUS_METERS = 1000;
+export const DEFAULT_PROMO_NOTIFICATION_TEXT =
+  'أهلاً بك بالقرب من متجر SEDO للهدايا والزهور! تفضل بزيارتنا في حي الميلاد واستمتع بأجمل باقات الورد والهدايا الفاخرة.';
+export const PROMO_COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
+export const PROMO_LAST_NOTIFIED_STORAGE_KEY = 'last_promo_notified_at';
+
+export function calculateHaversineDistanceMeters(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const earthRadiusMeters = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMeters * c;
+}
+
+export function shouldTriggerProximityPromo(input: {
+  distanceMeters: number;
+  radiusMeters: number;
+  lastNotifiedAtMs: number | null;
+  nowMs?: number;
+  cooldownMs?: number;
+}): boolean {
+  const {
+    distanceMeters,
+    radiusMeters,
+    lastNotifiedAtMs,
+    nowMs = Date.now(),
+    cooldownMs = PROMO_COOLDOWN_MS,
+  } = input;
+
+  if (!Number.isFinite(distanceMeters) || !Number.isFinite(radiusMeters) || radiusMeters <= 0) {
+    return false;
+  }
+  if (distanceMeters > radiusMeters) {
+    return false;
+  }
+  if (lastNotifiedAtMs !== null && Number.isFinite(lastNotifiedAtMs)) {
+    if (nowMs - lastNotifiedAtMs < cooldownMs) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function resolveShopCoordinates(settings: {
+  shop_lat?: number | null;
+  shop_lng?: number | null;
+  google_maps_url?: string | null;
+}): { lat: number; lng: number } {
+  const lat = Number(settings.shop_lat);
+  const lng = Number(settings.shop_lng);
+  if (
+    settings.shop_lat !== null &&
+    settings.shop_lat !== undefined &&
+    settings.shop_lng !== null &&
+    settings.shop_lng !== undefined &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180
+  ) {
+    return { lat, lng };
+  }
+  return extractCoordsFromMapsUrl(settings.google_maps_url, {
+    lat: DEFAULT_SHOP_LAT,
+    lng: DEFAULT_SHOP_LNG,
+  });
+}

@@ -127,4 +127,8 @@ export interface StoreSettingsRow {
   loyalty_reward_type?: 'gift' | 'discount' | string;
   loyalty_reward_value?: string | null;
   cash_only?: boolean;
+  shop_lat?: number | null;
+  shop_lng?: number | null;
+  promo_radius_meters?: number | null;
+  promo_notification_text?: string | null;
 }

@@ -67,22 +67,35 @@ CREATE UNIQUE INDEX IF NOT EXISTS loyalty_logs_unique_order_stamp_idx
   ON public.loyalty_logs (order_id)
   WHERE order_id IS NOT NULL AND action IN ('add_stamp', 'qualifying_purchase_stamp');
 
--- 7. Extend store_settings with official SEDO contact & loyalty reward rules
+-- 7. Extend store_settings with official SEDO contact, loyalty rules, & proximity geofencing
 ALTER TABLE public.store_settings
   ADD COLUMN IF NOT EXISTS whatsapp_numbers text DEFAULT '07762963674, 07733484176',
   ADD COLUMN IF NOT EXISTS loyalty_required_purchases integer NOT NULL DEFAULT 9,
   ADD COLUMN IF NOT EXISTS loyalty_reward_type text NOT NULL DEFAULT 'gift',
   ADD COLUMN IF NOT EXISTS loyalty_reward_value text DEFAULT 'باقة أو هدية مجانية على الطلب العاشر',
-  ADD COLUMN IF NOT EXISTS cash_only boolean NOT NULL DEFAULT true;
+  ADD COLUMN IF NOT EXISTS cash_only boolean NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS shop_lat double precision DEFAULT 32.6027,
+  ADD COLUMN IF NOT EXISTS shop_lng double precision DEFAULT 44.0197,
+  ADD COLUMN IF NOT EXISTS promo_radius_meters integer NOT NULL DEFAULT 1000,
+  ADD COLUMN IF NOT EXISTS promo_notification_text text DEFAULT 'أهلاً بك بالقرب من متجر SEDO للهدايا والزهور! تفضل بزيارتنا في حي الميلاد واستمتع بأجمل باقات الورد والهدايا الفاخرة.';
 
 UPDATE public.store_settings
 SET
-  phone_numbers = '07762963674, 07733484176',
+  phone_numbers = CASE
+    WHEN phone_numbers IS NULL OR phone_numbers = '07700000000' THEN '07762963674, 07733484176'
+    ELSE phone_numbers
+  END,
   whatsapp_numbers = COALESCE(NULLIF(whatsapp_numbers, ''), '07762963674, 07733484176'),
-  instagram_url = 'https://www.instagram.com/sedo.gift/',
-  cash_only = true
-WHERE id = 1
-  AND (phone_numbers IS NULL OR phone_numbers = '07700000000' OR instagram_url = 'https://instagram.com');
+  instagram_url = CASE
+    WHEN instagram_url IS NULL OR instagram_url = 'https://instagram.com' THEN 'https://www.instagram.com/sedo.gift/'
+    ELSE instagram_url
+  END,
+  cash_only = true,
+  shop_lat = COALESCE(shop_lat, 32.6027),
+  shop_lng = COALESCE(shop_lng, 44.0197),
+  promo_radius_meters = COALESCE(promo_radius_meters, 1000),
+  promo_notification_text = COALESCE(NULLIF(promo_notification_text, ''), 'أهلاً بك بالقرب من متجر SEDO للهدايا والزهور! تفضل بزيارتنا في حي الميلاد واستمتع بأجمل باقات الورد والهدايا الفاخرة.')
+WHERE id = 1;
 
 -- 8. Admin audit logs table
 CREATE TABLE IF NOT EXISTS public.audit_logs (

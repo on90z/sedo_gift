@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   APILoadingStatus,
   APIProvider,
@@ -10,6 +10,7 @@ import {
 import {
   Award,
   Banknote,
+  BellRing,
   Check,
   Clock,
   ExternalLink,
@@ -24,13 +25,18 @@ import {
   Plus,
   Search,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { supabase } from '../supabaseclient.tsx';
 import { AdminDashboard, ADMIN_STATUS_LABELS } from './AdminDashboard.tsx';
 import {
   calculateBouquetTotal,
+  calculateHaversineDistanceMeters,
   clampFlowerCount,
-  extractCoordsFromMapsUrl,
+  DEFAULT_PROMO_NOTIFICATION_TEXT,
+  DEFAULT_PROMO_RADIUS_METERS,
+  DEFAULT_SHOP_LAT,
+  DEFAULT_SHOP_LNG,
   formatIqd,
   formatOrderDetailsText,
   formatWhatsAppUrl,
@@ -39,7 +45,10 @@ import {
   OFFICIAL_PHONE_PRIMARY,
   OFFICIAL_PHONE_SECONDARY,
   parseStorePhoneList,
+  PROMO_LAST_NOTIFIED_STORAGE_KEY,
   resolveInstagramUrl,
+  resolveShopCoordinates,
+  shouldTriggerProximityPromo,
   type BouquetOrderDetails,
 } from './pricing.ts';
 import type { CustomerRow, OrderRow, ProductRow, RoutePath, StoreSettingsRow } from './types.ts';
@@ -95,10 +104,14 @@ function StoreLocationMap({
   shopName,
   address,
   mapsUrl,
+  shopLat,
+  shopLng,
 }: {
   shopName: string;
   address: string;
   mapsUrl: string;
+  shopLat?: number | null;
+  shopLng?: number | null;
 }) {
   const [quotaError, setQuotaError] = useState(false);
 
@@ -108,7 +121,15 @@ function StoreLocationMap({
     return () => window.removeEventListener('gmp-quota-exceeded', onQuota);
   }, []);
 
-  const coords = useMemo(() => extractCoordsFromMapsUrl(mapsUrl), [mapsUrl]);
+  const coords = useMemo(
+    () =>
+      resolveShopCoordinates({
+        shop_lat: shopLat,
+        shop_lng: shopLng,
+        google_maps_url: mapsUrl,
+      }),
+    [shopLat, shopLng, mapsUrl]
+  );
 
   if (!MAPS_API_KEY || quotaError) {
     return (
@@ -247,9 +268,22 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
     loyalty_reward_type: 'gift',
     loyalty_reward_value: 'باقة أو هدية مجانية على الطلب العاشر',
     cash_only: true,
+    shop_lat: DEFAULT_SHOP_LAT,
+    shop_lng: DEFAULT_SHOP_LNG,
+    promo_radius_meters: DEFAULT_PROMO_RADIUS_METERS,
+    promo_notification_text: DEFAULT_PROMO_NOTIFICATION_TEXT,
   });
   const [loadingCatalog, setLoadingCatalog] = useState(true);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  // Proximity Notification & Geofencing state
+  const [promoStatus, setPromoStatus] = useState<
+    'idle' | 'requesting' | 'active' | 'denied' | 'unsupported' | 'error'
+  >('idle');
+  const [promoDistanceMeters, setPromoDistanceMeters] = useState<number | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoBannerText, setPromoBannerText] = useState<string | null>(null);
+  const watchIdRef = useRef<number | null>(null);
 
   // Builder state
   const [selectedFlowerId, setSelectedFlowerId] = useState<string>('');
@@ -325,6 +359,10 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
     loadStorefront();
     return () => {
       cancelled = true;
+      if (watchIdRef.current !== null && 'geolocation' in navigator) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
     };
   }, []);
 
@@ -499,6 +537,119 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
     }
   };
 
+  const handleEnableProximityNotifications = async () => {
+    setPromoError(null);
+
+    if (typeof window === 'undefined' || !('Notification' in window) || !('geolocation' in navigator)) {
+      setPromoStatus('unsupported');
+      setPromoError('متصفحك الحالي لا يدعم إشعارات المتصفح أو تحديد الموقع الجغرافي.');
+      return;
+    }
+
+    setPromoStatus('requesting');
+
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPromoStatus('denied');
+        setPromoError('يرجى السماح بإشعارات المتصفح لتلقي عروض SEDO عند اقترابك من المحل.');
+        return;
+      }
+
+      // Fetch latest store_settings row (id = 1) directly from Supabase
+      const { data: freshRow } = await supabase
+        .from('store_settings')
+        .select('*')
+        .eq('id', 1)
+        .maybeSingle();
+
+      const activeSettings = (freshRow as StoreSettingsRow | null) ?? settings;
+      if (freshRow) {
+        setSettings(activeSettings);
+      }
+
+      const shopCoords = resolveShopCoordinates(activeSettings);
+      const radiusMeters = Math.max(
+        50,
+        Number(activeSettings.promo_radius_meters) || DEFAULT_PROMO_RADIUS_METERS
+      );
+      const promoText =
+        activeSettings.promo_notification_text?.trim() || DEFAULT_PROMO_NOTIFICATION_TEXT;
+
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
+
+      setPromoStatus('active');
+
+      watchIdRef.current = navigator.geolocation.watchPosition(
+        (position) => {
+          const distanceMeters = Math.round(
+            calculateHaversineDistanceMeters(
+              position.coords.latitude,
+              position.coords.longitude,
+              shopCoords.lat,
+              shopCoords.lng
+            )
+          );
+          setPromoError(null);
+          setPromoDistanceMeters(distanceMeters);
+
+          if (
+            distanceMeters <= radiusMeters &&
+            (permission === 'granted' || Notification.permission === 'granted')
+          ) {
+            const rawLast = window.localStorage.getItem(PROMO_LAST_NOTIFIED_STORAGE_KEY);
+            const parsedLast = rawLast ? Number(rawLast) : null;
+            const lastNotifiedAtMs =
+              parsedLast !== null && Number.isFinite(parsedLast) ? parsedLast : null;
+
+            if (
+              shouldTriggerProximityPromo({
+                distanceMeters,
+                radiusMeters,
+                lastNotifiedAtMs,
+              })
+            ) {
+              window.localStorage.setItem(PROMO_LAST_NOTIFIED_STORAGE_KEY, String(Date.now()));
+              try {
+                new Notification('SEDO للهدايا والزهور', {
+                  body: promoText,
+                  icon: heroBouquetImg,
+                });
+              } catch {
+                // Fallback safely if browser restricts direct Notification constructor
+              }
+              setPromoBannerText(promoText);
+            }
+          }
+        },
+        (geoErr) => {
+          if (geoErr.code === geoErr.PERMISSION_DENIED) {
+            setPromoStatus('denied');
+            setPromoError('تم رفض إذن الموقع الجغرافي. يمكنك تفعيله من إعدادات المتصفح.');
+          } else {
+            setPromoStatus((prev) => {
+              if (prev !== 'active') {
+                setPromoError('تعذّر تحديد موقعك الحالي حالياً. تأكد من تفعيل GPS والمحاولة مرة أخرى.');
+                return 'error';
+              }
+              return prev;
+            });
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 10000,
+          timeout: 15000,
+        }
+      );
+    } catch (err) {
+      setPromoStatus('error');
+      setPromoError(err instanceof Error ? err.message : 'حدث خطأ أثناء تفعيل إشعارات القرب.');
+    }
+  };
+
   const mapsUrl =
     settings.google_maps_url || 'https://maps.google.com/?q=32.6027,44.0197';
 
@@ -541,8 +692,77 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
         </div>
       </header>
 
-      {/* Hero */}
+      {/* Hero + Non-Intrusive Proximity Notification Opt-in */}
       <section id="top" className="bg-[#461221] border-b border-white/15">
+        {/* Celebratory In-App Banner when customer enters geofence */}
+        {promoBannerText && (
+          <div className="bg-[#0E0A0C] border-b border-[#F48FB1]/50">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-start sm:items-center justify-between gap-3">
+              <div className="flex items-start sm:items-center gap-3">
+                <span className="w-8 h-8 rounded-xl bg-[#5E1D2F] border border-[#F48FB1]/60 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4 text-[#F8BBD0]" />
+                </span>
+                <div className="space-y-0.5">
+                  <div className="text-xs font-bold text-[#F8BBD0]">
+                    أنت الآن بالقرب من متجر SEDO للهدايا والزهور!
+                    {promoDistanceMeters !== null && (
+                      <span className="mr-2 font-normal text-white/75 tabular-nums-en">
+                        ({promoDistanceMeters} م)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs sm:text-sm text-white leading-relaxed">{promoBannerText}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="إغلاق إشعار الترحيب"
+                onClick={() => setPromoBannerText(null)}
+                className="p-1.5 rounded-lg bg-[#461221] border border-white/20 text-white/80 hover:text-white cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-5">
+          <div className="rounded-2xl bg-[#0E0A0C]/85 border border-white/15 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-xs sm:text-sm text-white/90">
+              <BellRing className="w-4 h-4 text-[#F48FB1] shrink-0" />
+              <span>
+                {promoStatus === 'active'
+                  ? promoDistanceMeters !== null
+                    ? `تم تفعيل إشعارات القرب بنجاح • المسافة عن المحل: ${promoDistanceMeters} متر`
+                    : 'تم تفعيل إشعارات القرب بنجاح • جاري متابعة موقعك...'
+                  : 'استلم ترحيباً وعروضاً خاصة فور اقترابك من محل SEDO في كربلاء'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleEnableProximityNotifications}
+              disabled={promoStatus === 'requesting'}
+              className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold border transition cursor-pointer shrink-0 ${
+                promoStatus === 'active'
+                  ? 'bg-[#5E1D2F] border-[#F48FB1]/60 text-[#F8BBD0]'
+                  : 'bg-[#461221] hover:bg-[#5E1D2F] border-white/25 text-white'
+              }`}
+            >
+              <BellRing className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                {promoStatus === 'requesting'
+                  ? 'جاري التفعيل...'
+                  : promoStatus === 'active'
+                  ? 'إشعارات القرب مفعّلة ✓'
+                  : 'تفعيل إشعارات وعروض SEDO عند الاقتراب من المحل'}
+              </span>
+            </button>
+          </div>
+          {promoError && (
+            <p className="text-xs text-[#F8BBD0] mt-2 px-1">{promoError}</p>
+          )}
+        </div>
+
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 lg:py-14 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           <div className="lg:col-span-6 space-y-5">
             <p className="text-xs sm:text-sm uppercase tracking-widest text-white/75">
@@ -1288,6 +1508,8 @@ function HomePage({ onOpenAdmin }: { onOpenAdmin: () => void }) {
                 shopName={settings.shop_name}
                 address={settings.address}
                 mapsUrl={mapsUrl}
+                shopLat={settings.shop_lat}
+                shopLng={settings.shop_lng}
               />
             </div>
           </div>

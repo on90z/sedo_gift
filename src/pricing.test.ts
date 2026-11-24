@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   calculateBouquetTotal,
+  calculateHaversineDistanceMeters,
   clampFlowerCount,
   computeCustomerSummaries,
   computeDailyOrderStats,
+  DEFAULT_SHOP_LAT,
+  DEFAULT_SHOP_LNG,
   extractCoordsFromMapsUrl,
   formatIqd,
   formatOrderDetailsText,
@@ -16,7 +19,10 @@ import {
   nextStampCount,
   normalizePhone,
   parseStorePhoneList,
+  PROMO_COOLDOWN_MS,
   resolveInstagramUrl,
+  resolveShopCoordinates,
+  shouldTriggerProximityPromo,
   validateProductImageFile,
 } from './pricing.ts';
 
@@ -197,5 +203,80 @@ test('formatIqd, nextStampCount, extractCoordsFromMapsUrl, and formatOrderDetail
       flower_name: 'ورد أحمر طبيعي',
       flower_count: 15,
     }).includes('ورد أحمر طبيعي × 15')
+  );
+});
+
+test('Haversine distance and 12-hour geofencing promo trigger rules work accurately', () => {
+  assert.equal(
+    Math.round(
+      calculateHaversineDistanceMeters(
+        DEFAULT_SHOP_LAT,
+        DEFAULT_SHOP_LNG,
+        DEFAULT_SHOP_LAT,
+        DEFAULT_SHOP_LNG
+      )
+    ),
+    0
+  );
+
+  // ~555 meters north in Karbala
+  const nearbyMeters = calculateHaversineDistanceMeters(32.6077, 44.0197, 32.6027, 44.0197);
+  assert.ok(nearbyMeters > 500 && nearbyMeters < 650);
+
+  // ~3.3 km away
+  const farMeters = calculateHaversineDistanceMeters(32.6327, 44.0197, 32.6027, 44.0197);
+  assert.ok(farMeters > 3000);
+
+  const now = 1_700_000_000_000;
+  assert.equal(
+    shouldTriggerProximityPromo({
+      distanceMeters: 450,
+      radiusMeters: 1000,
+      lastNotifiedAtMs: null,
+      nowMs: now,
+    }),
+    true
+  );
+
+  // Inside 12h cooldown -> blocked
+  assert.equal(
+    shouldTriggerProximityPromo({
+      distanceMeters: 450,
+      radiusMeters: 1000,
+      lastNotifiedAtMs: now - (PROMO_COOLDOWN_MS - 60_000),
+      nowMs: now,
+    }),
+    false
+  );
+
+  // Past 12h cooldown -> allowed
+  assert.equal(
+    shouldTriggerProximityPromo({
+      distanceMeters: 450,
+      radiusMeters: 1000,
+      lastNotifiedAtMs: now - (PROMO_COOLDOWN_MS + 1000),
+      nowMs: now,
+    }),
+    true
+  );
+
+  // Outside radius -> blocked
+  assert.equal(
+    shouldTriggerProximityPromo({
+      distanceMeters: 1200,
+      radiusMeters: 1000,
+      lastNotifiedAtMs: null,
+      nowMs: now,
+    }),
+    false
+  );
+
+  assert.deepEqual(
+    resolveShopCoordinates({
+      shop_lat: 32.6111,
+      shop_lng: 44.0222,
+      google_maps_url: 'https://maps.google.com/?q=32.6027,44.0197',
+    }),
+    { lat: 32.6111, lng: 44.0222 }
   );
 });
