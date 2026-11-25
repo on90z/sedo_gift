@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState, type ChangeEvent, type FormE
 import type { Session } from '@supabase/supabase-js';
 import {
   AlertTriangle,
+  ArrowRight,
   Award,
+  Banknote,
   BarChart3,
   BellRing,
   Calendar,
@@ -28,6 +30,7 @@ import {
   Phone,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Settings,
   ShieldCheck,
@@ -48,6 +51,7 @@ import {
   DEFAULT_PROMO_RADIUS_METERS,
   DEFAULT_SHOP_LAT,
   DEFAULT_SHOP_LNG,
+  extractOrderBreakdown,
   extractOrderMeta,
   formatIqd,
   formatOrderDetailsText,
@@ -270,6 +274,10 @@ export function AdminDashboard({
   const [savingSettings, setSavingSettings] = useState(false);
   const [locatingShopCoords, setLocatingShopCoords] = useState(false);
 
+  // Daily Shift Reset State
+  const [resetDayConfirmOpen, setResetDayConfirmOpen] = useState(false);
+  const [resettingDay, setResettingDay] = useState(false);
+
   useEffect(() => {
     let active = true;
     supabase.auth.getSession().then(({ data }) => {
@@ -380,8 +388,32 @@ export function AdminDashboard({
       setLoyaltyLogs((loyaltyRes.data ?? []) as LoyaltyLogRow[]);
     }
 
+    let latestAuditResetIso: string | null = null;
+    if (auditRes.error && isMissingSchemaError(auditRes.error)) {
+      needsMigration = true;
+    } else if (auditRes.data) {
+      const audits = auditRes.data as AuditLogRow[];
+      setAuditLogs(audits);
+      const resetLog = audits.find((a) => a.action === 'reset_daily_shift');
+      if (resetLog) {
+        const detailResetAt =
+          resetLog.details && typeof resetLog.details === 'object' && 'reset_at' in resetLog.details
+            ? String((resetLog.details as { reset_at?: unknown }).reset_at ?? '')
+            : '';
+        latestAuditResetIso = detailResetAt || resetLog.created_at;
+      }
+    }
+
     if (settingsRes.data) {
       const s = settingsRes.data as StoreSettingsRow;
+      const dbResetIso = s.daily_reset_at ?? null;
+      const effectiveResetIso =
+        dbResetIso && latestAuditResetIso
+          ? new Date(dbResetIso).getTime() >= new Date(latestAuditResetIso).getTime()
+            ? dbResetIso
+            : latestAuditResetIso
+          : dbResetIso || latestAuditResetIso;
+
       const merged: StoreSettingsRow = {
         ...s,
         phone_numbers: parseStorePhoneList(s.phone_numbers).join(', '),
@@ -397,9 +429,12 @@ export function AdminDashboard({
         promo_radius_meters: s.promo_radius_meters ?? DEFAULT_PROMO_RADIUS_METERS,
         promo_notification_text:
           s.promo_notification_text ?? DEFAULT_PROMO_NOTIFICATION_TEXT,
+        daily_reset_at: effectiveResetIso,
       };
       setSettings(merged);
       setSettingsDraft(merged);
+    } else if (latestAuditResetIso) {
+      setSettings((prev) => ({ ...prev, daily_reset_at: latestAuditResetIso }));
     }
 
     if (catsRes.error && isMissingSchemaError(catsRes.error)) {
@@ -411,12 +446,6 @@ export function AdminDashboard({
       ]);
     } else if (catsRes.data) {
       setCategories(catsRes.data as CategoryRow[]);
-    }
-
-    if (auditRes.error && isMissingSchemaError(auditRes.error)) {
-      needsMigration = true;
-    } else if (auditRes.data) {
-      setAuditLogs(auditRes.data as AuditLogRow[]);
     }
 
     if (!histRes.error && histRes.data) {
@@ -441,13 +470,18 @@ export function AdminDashboard({
   );
 
   const todayStats = useMemo(
-    () => computeDailyOrderStats(orders, todayBaghdad),
-    [orders, todayBaghdad]
+    () => computeDailyOrderStats(orders, todayBaghdad, settings.daily_reset_at),
+    [orders, todayBaghdad, settings.daily_reset_at]
   );
 
   const selectedDayStats = useMemo(
-    () => computeDailyOrderStats(orders, todayDateFilter || todayBaghdad),
-    [orders, todayDateFilter, todayBaghdad]
+    () =>
+      computeDailyOrderStats(
+        orders,
+        todayDateFilter || todayBaghdad,
+        settings.daily_reset_at
+      ),
+    [orders, todayDateFilter, todayBaghdad, settings.daily_reset_at]
   );
 
   const filteredAllOrders = useMemo(() => {
@@ -1172,10 +1206,69 @@ export function AdminDashboard({
         shop_lat: fullUpdate.shop_lat,
         shop_lng: fullUpdate.shop_lng,
       });
-      setSettings({ ...settingsDraft, ...fullUpdate });
+      setSettings((prev) => ({ ...prev, ...settingsDraft, ...fullUpdate }));
       setActionMessage('تم حفظ إعدادات المتجر، القرب الجغرافي، ومعلومات التواصل في Supabase بنجاح.');
     }
     setSavingSettings(false);
+  };
+
+  // Reset Today's Shift / Counters securely in Supabase without deleting historical orders
+  const handleConfirmResetDay = async () => {
+    if (!session?.user) {
+      setActionError('يجب تسجيل الدخول بحساب الإدارة لإجراء تصفير شغل اليوم.');
+      return;
+    }
+    setResettingDay(true);
+    setActionError(null);
+    setActionMessage(null);
+
+    const resetIso = new Date().toISOString();
+    let persisted = false;
+
+    const { error: settingsErr } = await supabase
+      .from('store_settings')
+      .update({ daily_reset_at: resetIso })
+      .eq('id', settings.id);
+
+    if (!settingsErr) {
+      persisted = true;
+    } else if (!isMissingSchemaError(settingsErr)) {
+      setActionError(`تعذّر تصفير عدادات اليوم: ${settingsErr.message}`);
+      setResettingDay(false);
+      return;
+    }
+
+    const { error: auditErr } = await supabase.from('audit_logs').insert({
+      actor_email: session.user.email || 'admin',
+      action: 'reset_daily_shift',
+      entity_type: 'store_settings',
+      entity_id: String(settings.id),
+      details: {
+        reset_at: resetIso,
+        baghdad_date: todayBaghdad,
+        previous_today_total: todayStats.total,
+        previous_today_sales_iqd: todayStats.deliveredSalesIqd,
+      },
+    });
+
+    if (!auditErr) {
+      persisted = true;
+    } else if (!persisted) {
+      setActionError(
+        `تعذّر حفظ التصفير في قاعدة البيانات (${auditErr.message}). يرجى التحقق من الصلاحيات وتشغيل supabase_migration.sql.`
+      );
+      setResettingDay(false);
+      return;
+    }
+
+    setSettings((prev) => ({ ...prev, daily_reset_at: resetIso }));
+    setSettingsDraft((prev) => ({ ...prev, daily_reset_at: resetIso }));
+    setResetDayConfirmOpen(false);
+    setActionMessage(
+      'تم تصفير عدادات شغل اليوم بنجاح. جميع الطلبات والسجلات التاريخية محفوظة كما هي.'
+    );
+    setResettingDay(false);
+    await loadAllAdminData();
   };
 
   if (!authReady) {
@@ -1414,13 +1507,35 @@ export function AdminDashboard({
           {/* 1. DASHBOARD */}
           {activeTab === 'dashboard' && (
             <div className="space-y-6">
+              <div className="rounded-2xl bg-[#461221] border border-white/15 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold text-white">ملخص شغل اليوم (توقيت بغداد)</h2>
+                  <p className="text-xs text-white/75 mt-0.5 tabular-nums-en">
+                    {settings.daily_reset_at && getBaghdadDateKey(settings.daily_reset_at) === todayBaghdad
+                      ? `تم تصفير عدادات اليوم عند الساعة ${getBaghdadTimeFormatted(settings.daily_reset_at)} — الطلبات السابقة محفوظة في السجل.`
+                      : `إحصائيات اليوم المباشرة لتاريخ ${todayBaghdad}`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setResetDayConfirmOpen(true)}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0E0A0C] hover:bg-black border border-[#F48FB1]/50 text-xs sm:text-sm font-semibold text-white transition cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-4 h-4 text-[#F48FB1]" />
+                  <span>تصفير شغل اليوم</span>
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard label="طلبات اليوم (بغداد)" value={String(todayStats.total)} />
                 <StatCard
                   label="مبيعات اليوم المسلمة"
                   value={formatIqd(todayStats.deliveredSalesIqd)}
                 />
-                <StatCard label="إجمالي الزبائن" value={String(customers.length)} />
+                <StatCard
+                  label="مكتملة اليوم / قيد الانتظار"
+                  value={`${todayStats.delivered} / ${todayStats.pending}`}
+                />
                 <StatCard
                   label="المنتجات النشطة"
                   value={`${products.filter((p) => p.is_active).length} / ${products.length}`}
@@ -1560,6 +1675,26 @@ export function AdminDashboard({
           {/* 3. TODAY'S ORDERS (Asia/Baghdad) */}
           {activeTab === 'today_orders' && (
             <div className="space-y-6">
+              <div className="rounded-2xl bg-[#461221] border border-white/15 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold text-white">إحصائيات اليوم النشطة</h2>
+                  <p className="text-xs text-white/75 mt-0.5 tabular-nums-en">
+                    {settings.daily_reset_at &&
+                    getBaghdadDateKey(settings.daily_reset_at) === (todayDateFilter || todayBaghdad)
+                      ? `عدادات اليوم مهيّأة بعد تصفير الساعة ${getBaghdadTimeFormatted(settings.daily_reset_at)} — سجل الطلبات السابقة باقٍ بالكامل.`
+                      : 'يتم احتساب جميع طلبات اليوم المحدد بتوقيت بغداد.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setResetDayConfirmOpen(true)}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#0E0A0C] hover:bg-black border border-[#F48FB1]/50 text-xs sm:text-sm font-semibold text-white transition cursor-pointer shrink-0"
+                >
+                  <RotateCcw className="w-4 h-4 text-[#F48FB1]" />
+                  <span>تصفير شغل اليوم</span>
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <StatCard label="إجمالي طلبات اليوم" value={String(selectedDayStats.total)} />
                 <StatCard label="قيد الانتظار" value={String(selectedDayStats.pending)} />
@@ -2545,165 +2680,460 @@ export function AdminDashboard({
         </main>
       </div>
 
-      {/* ORDER DETAIL MODAL */}
-      {selectedOrderModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-[#461221] border border-white/25 p-6 space-y-5">
-            <div className="flex items-center justify-between gap-2 border-b border-white/15 pb-3">
-              <div>
-                <h3 className="text-lg font-bold text-white tabular-nums-en">
-                  تفاصيل الطلب #{selectedOrderModal.id.slice(0, 8)}
+      {/* RESET DAILY SHIFT CONFIRMATION DIALOG */}
+      {resetDayConfirmOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="reset-day-dialog-title"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#461221] border border-white/25 p-6 space-y-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#0E0A0C] border border-[#F48FB1]/50 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5 text-[#F48FB1]" />
+              </div>
+              <div className="space-y-1.5">
+                <h3 id="reset-day-dialog-title" className="text-lg font-bold text-white">
+                  تصفير شغل اليوم
                 </h3>
-                <p className="text-xs text-white/75 tabular-nums-en">
-                  {formatBaghdadDateTime(selectedOrderModal.created_at)}
+                <p className="text-sm text-white/90 leading-relaxed">
+                  هل أنت متأكد من تصفير شغل اليوم؟ سيتم تصفير إحصائيات اليوم فقط، ولن يتم حذف أي طلبات أو بيانات محفوظة.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedOrderModal(null)}
-                className="p-2 rounded-xl bg-[#0E0A0C] border border-white/20 text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
             </div>
 
-            {(() => {
-              const meta = extractOrderMeta(selectedOrderModal);
-              const d =
-                selectedOrderModal.order_details &&
-                typeof selectedOrderModal.order_details === 'object'
-                  ? (selectedOrderModal.order_details as Partial<BouquetOrderDetails>)
-                  : null;
-              const stamped = hasOrderStamp(selectedOrderModal.id, loyaltyLogs);
-              const historyForOrder = orderHistory.filter(
-                (h) => h.order_id === selectedOrderModal.id
-              );
-
-              return (
-                <div className="space-y-4 text-sm">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl bg-[#0E0A0C] border border-white/15 p-4">
-                    <div>
-                      <div className="text-xs text-white/60">الزبون</div>
-                      <div className="font-semibold text-white">
-                        {selectedOrderModal.customer_name}
-                      </div>
-                      <div className="text-xs text-white/80 tabular-nums-en mt-1" dir="ltr">
-                        {selectedOrderModal.customer_phone}
-                      </div>
-                      <div className="flex gap-2 mt-2">
-                        <a
-                          href={`tel:${normalizePhone(selectedOrderModal.customer_phone)}`}
-                          className="px-2.5 py-1 rounded-lg bg-[#461221] border border-white/20 text-xs text-white"
-                        >
-                          اتصال
-                        </a>
-                        <a
-                          href={formatWhatsAppUrl(selectedOrderModal.customer_phone)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-2.5 py-1 rounded-lg bg-[#5E1D2F] border border-white/20 text-xs text-white"
-                        >
-                          واتساب
-                        </a>
-                      </div>
-                    </div>
-                    <div className="space-y-1 text-xs text-white/85">
-                      <div>العنوان: {meta.deliveryAddress || '—'}</div>
-                      <div>المدينة/المنطقة: {meta.city || '—'}</div>
-                      <div>أقرب نقطة دالة: {meta.nearestLandmark || '—'}</div>
-                      <div>ملاحظات: {meta.notes || '—'}</div>
-                      <div>طريقة الدفع: {meta.paymentMethod}</div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-[#0E0A0C] border border-white/15 p-4 space-y-2">
-                    <div className="font-semibold text-white">المنتجات والتفاصيل</div>
-                    {d ? (
-                      <ul className="space-y-1.5 text-xs text-white/85">
-                        <li>
-                          • {d.flower_name} — العدد: {d.flower_count} ×{' '}
-                          {formatIqd(d.flower_unit_price_iqd ?? 0)} ({d.flower_color} /{' '}
-                          {d.bouquet_shape})
-                        </li>
-                        <li>
-                          • التغليف: {d.wrapping_name} ({formatIqd(d.wrapping_price_iqd ?? 0)})
-                        </li>
-                        {d.gift_name && (
-                          <li>
-                            • الهدية: {d.gift_name} ({formatIqd(d.gift_price_iqd ?? 0)})
-                          </li>
-                        )}
-                      </ul>
-                    ) : (
-                      <p className="text-xs text-white/80">
-                        {formatOrderDetailsText(selectedOrderModal.order_details)}
-                      </p>
-                    )}
-                    <div className="pt-2 border-t border-white/15 flex justify-between font-bold text-white tabular-nums-en">
-                      <span>الإجمالي</span>
-                      <span>{formatIqd(selectedOrderModal.total_price_iqd)}</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="text-xs text-white/75">تحديث حالة الطلب:</div>
-                    <div className="flex flex-wrap gap-2">
-                      {STATUS_OPTIONS.map((st) => (
-                        <button
-                          key={st.value}
-                          type="button"
-                          disabled={busyOrderId === selectedOrderModal.id}
-                          onClick={() => handleUpdateOrderStatus(selectedOrderModal, st.value)}
-                          className={`px-3 py-1.5 rounded-xl border text-xs font-medium cursor-pointer ${
-                            selectedOrderModal.status === st.value
-                              ? 'bg-[#0E0A0C] border-white text-white'
-                              : 'bg-[#5E1D2F] border-white/20 text-white/85 hover:border-white/50'
-                          }`}
-                        >
-                          {st.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-white/15">
-                    <span className="text-xs text-white/80">
-                      حالة الختم: {stamped ? 'تم منح الختم ✓' : 'لم يُمنح ختم بعد'}
-                    </span>
-                    {isQualifyingCompletedStatus(selectedOrderModal.status) && !stamped && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          awardQualifyingStampForOrder(selectedOrderModal, false).then((msg) => {
-                            if (msg) {
-                              setActionMessage(msg);
-                              loadAllAdminData();
-                            }
-                          })
-                        }
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0E0A0C] border border-[#F48FB1] text-xs font-semibold text-white cursor-pointer"
-                      >
-                        <Award className="w-3.5 h-3.5 text-[#F48FB1]" />
-                        <span>منح ختم الولاء</span>
-                      </button>
-                    )}
-                  </div>
-
-                  {historyForOrder.length > 0 && (
-                    <div className="space-y-1.5 pt-2 border-t border-white/15">
-                      <div className="text-xs text-white/75">سجل تغييرات الحالة:</div>
-                      {historyForOrder.map((h) => (
-                        <div key={h.id} className="text-xs text-white/80 tabular-nums-en">
-                          {formatBaghdadDateTime(h.created_at)} —{' '}
-                          {ADMIN_STATUS_LABELS[h.new_status] ?? h.new_status}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            <div className="flex flex-col sm:flex-row gap-3 pt-1">
+              <button
+                type="button"
+                disabled={resettingDay}
+                onClick={handleConfirmResetDay}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-[#0E0A0C] hover:bg-black disabled:opacity-50 border border-[#F48FB1]/60 text-sm font-semibold text-white cursor-pointer"
+              >
+                {resettingDay ? 'جاري التصفير...' : 'تأكيد التصفير'}
+              </button>
+              <button
+                type="button"
+                disabled={resettingDay}
+                onClick={() => setResetDayConfirmOpen(false)}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-[#5E1D2F] hover:bg-[#6E2438] border border-white/25 text-sm font-medium text-white cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* FULL-SCREEN ORDER DETAILS VIEW */}
+      {selectedOrderModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`تفاصيل الطلب #${selectedOrderModal.id.slice(0, 8)}`}
+          className="fixed inset-0 z-50 bg-[#5E1D2F] text-white overflow-y-auto"
+        >
+          {/* Sticky Full-Screen Header */}
+          <div className="sticky top-0 z-10 bg-[#461221]/95 backdrop-blur border-b border-white/15">
+            <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrderModal(null)}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-[#0E0A0C] hover:bg-black border border-white/25 text-xs sm:text-sm font-medium text-white cursor-pointer"
+                >
+                  <ArrowRight className="w-4 h-4" />
+                  <span>العودة للطلبات</span>
+                </button>
+                <div>
+                  <h2 className="text-lg sm:text-2xl font-bold text-white tabular-nums-en">
+                    طلب #{selectedOrderModal.order_number || selectedOrderModal.id.slice(0, 8)}
+                  </h2>
+                  <p className="text-xs text-white/75 tabular-nums-en">
+                    تاريخ الإنشاء (بغداد): {formatBaghdadDateTime(selectedOrderModal.created_at)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                <span className="px-3.5 py-1.5 rounded-xl bg-[#0E0A0C] border border-[#F48FB1]/50 text-xs sm:text-sm font-semibold text-[#F8BBD0]">
+                  {ADMIN_STATUS_LABELS[selectedOrderModal.status] ?? selectedOrderModal.status}
+                </span>
+                <button
+                  type="button"
+                  aria-label="إغلاق تفاصيل الطلب"
+                  onClick={() => setSelectedOrderModal(null)}
+                  className="p-2.5 rounded-xl bg-[#0E0A0C] hover:bg-black border border-white/25 text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {(() => {
+            const meta = extractOrderMeta(selectedOrderModal);
+            const breakdown = extractOrderBreakdown(selectedOrderModal);
+            const stamped = hasOrderStamp(selectedOrderModal.id, loyaltyLogs);
+            const historyForOrder = orderHistory.filter(
+              (h) => h.order_id === selectedOrderModal.id
+            );
+
+            return (
+              <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
+                {/* A. Customer Information & B. Order Information */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* A. معلومات الزبون */}
+                  <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
+                    <div className="flex items-center gap-2.5 border-b border-white/15 pb-3">
+                      <Users className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                      <h3 className="text-base sm:text-lg font-bold text-white">أ. معلومات الزبون</h3>
+                    </div>
+
+                    <div className="space-y-3 text-sm">
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">الاسم الكامل</div>
+                        <div className="text-base font-bold text-white mt-0.5">
+                          {selectedOrderModal.customer_name}
+                        </div>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs text-white/60">رقم الهاتف</div>
+                          <div className="text-base font-semibold text-white tabular-nums-en mt-0.5" dir="ltr">
+                            {selectedOrderModal.customer_phone}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <a
+                            href={`tel:${normalizePhone(selectedOrderModal.customer_phone)}`}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#461221] hover:bg-[#5E1D2F] border border-white/25 text-xs font-semibold text-white"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                            <span>اتصال مباشر</span>
+                          </a>
+                          <a
+                            href={formatWhatsAppUrl(selectedOrderModal.customer_phone)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#5E1D2F] hover:bg-[#6E2438] border border-white/25 text-xs font-semibold text-white"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span>واتساب</span>
+                          </a>
+                        </div>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15 space-y-2">
+                        <div>
+                          <div className="text-xs text-white/60">عنوان التوصيل الكامل</div>
+                          <div className="text-sm text-white mt-0.5 leading-relaxed">
+                            {meta.deliveryAddress || 'لم يُحدد عنوان توصيل (أو استلام من المتجر)'}
+                          </div>
+                        </div>
+                        {(meta.city || meta.nearestLandmark || selectedOrderModal.customer_birth_date) && (
+                          <div className="pt-2 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-white/85">
+                            <div>
+                              <span className="text-white/60">المدينة / المنطقة: </span>
+                              <span>{meta.city || '—'}</span>
+                            </div>
+                            <div>
+                              <span className="text-white/60">أقرب نقطة دالة: </span>
+                              <span>{meta.nearestLandmark || '—'}</span>
+                            </div>
+                            {selectedOrderModal.customer_birth_date && (
+                              <div className="sm:col-span-2 tabular-nums-en">
+                                <span className="text-white/60">تاريخ الميلاد: </span>
+                                <span>{selectedOrderModal.customer_birth_date}</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* B. معلومات الطلب */}
+                  <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
+                    <div className="flex items-center gap-2.5 border-b border-white/15 pb-3">
+                      <ClipboardList className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                      <h3 className="text-base sm:text-lg font-bold text-white">ب. معلومات الطلب</h3>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">المعرف الفريد للطلب (Order ID)</div>
+                        <div className="text-xs sm:text-sm font-mono text-white break-all mt-1 tabular-nums-en" dir="ltr">
+                          {selectedOrderModal.id}
+                        </div>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">رقم الطلب المختصر</div>
+                        <div className="text-base font-bold text-white tabular-nums-en mt-1">
+                          #{selectedOrderModal.order_number || selectedOrderModal.id.slice(0, 8)}
+                        </div>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">تاريخ ووقت الطلب (توقيت بغداد)</div>
+                        <div className="text-sm font-semibold text-white tabular-nums-en mt-1">
+                          {formatBaghdadDateTime(selectedOrderModal.created_at)}
+                        </div>
+                      </div>
+                      <div className="p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">الحالة الحالية</div>
+                        <div className="text-sm font-bold text-[#F8BBD0] mt-1">
+                          {ADMIN_STATUS_LABELS[selectedOrderModal.status] ?? selectedOrderModal.status}
+                        </div>
+                      </div>
+                      <div className="sm:col-span-2 p-3.5 rounded-xl bg-[#0E0A0C] border border-white/15">
+                        <div className="text-xs text-white/60">الطابع الزمني لإنشاء الطلب (Created At)</div>
+                        <div className="text-xs text-white/85 font-mono tabular-nums-en mt-1" dir="ltr">
+                          {selectedOrderModal.created_at}
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                {/* C. المنتجات والتصاميم المخصصة */}
+                <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/15 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <Package className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        ج. المنتجات والتصاميم المخصصة ({breakdown.items.length})
+                      </h3>
+                    </div>
+                    {(breakdown.flowerColor || breakdown.bouquetShape) && (
+                      <div className="text-xs sm:text-sm text-[#F8BBD0] bg-[#0E0A0C] border border-white/20 px-3 py-1.5 rounded-xl">
+                        التنسيق المختار: {breakdown.flowerColor || '—'} • {breakdown.bouquetShape || '—'}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                    {breakdown.items.map((item) => {
+                      const matchedProduct =
+                        products.find(
+                          (p) =>
+                            (item.productId && p.id === item.productId) ||
+                            p.name_ar.trim() === item.name.trim()
+                        ) ?? null;
+
+                      const fallbackKey = {
+                        name_ar: item.name,
+                        category: item.category === 'custom' ? 'flower' : item.category,
+                      };
+                      const itemImageSrc =
+                        matchedProduct?.image_url || getFallbackImage(fallbackKey);
+
+                      return (
+                        <div
+                          key={item.key}
+                          className="rounded-2xl bg-[#0E0A0C] border border-white/20 overflow-hidden flex flex-col"
+                        >
+                          <div className="relative h-56 sm:h-64 w-full bg-[#461221] overflow-hidden">
+                            <img
+                              src={itemImageSrc}
+                              alt={item.name}
+                              onError={(ev) => {
+                                ev.currentTarget.src = getFallbackImage(fallbackKey);
+                              }}
+                              className="w-full h-full object-cover"
+                            />
+                            <span className="absolute top-3 right-3 px-2.5 py-1 rounded-lg bg-[#0E0A0C]/90 border border-white/25 text-xs font-medium text-white">
+                              {item.category === 'flower'
+                                ? 'الزهور'
+                                : item.category === 'wrapping'
+                                ? 'التغليف'
+                                : item.category === 'gift'
+                                ? 'هدية'
+                                : 'طلب مخصص'}
+                            </span>
+                          </div>
+
+                          <div className="p-4 sm:p-5 space-y-3 flex-1 flex flex-col justify-between">
+                            <div className="space-y-2">
+                              <h4 className="text-base sm:text-lg font-bold text-white">
+                                {item.name}
+                              </h4>
+                              {item.options.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {item.options.map((opt) => (
+                                    <span
+                                      key={opt}
+                                      className="px-2.5 py-1 rounded-lg bg-[#461221] border border-white/15 text-xs text-white/90"
+                                    >
+                                      {opt}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="pt-3 border-t border-white/15 grid grid-cols-3 gap-2 text-xs">
+                              <div>
+                                <div className="text-white/60">الكمية</div>
+                                <div className="text-sm font-bold text-white tabular-nums-en mt-0.5">
+                                  {item.quantity}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-white/60">سعر الوحدة</div>
+                                <div className="text-sm font-semibold text-white tabular-nums-en mt-0.5">
+                                  {formatIqd(item.unitPriceIqd)}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-white/60">المجموع الفرعي</div>
+                                <div className="text-sm font-bold text-[#F8BBD0] tabular-nums-en mt-0.5">
+                                  {formatIqd(item.subtotalIqd)}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                {/* D. ملاحظات العميل */}
+                <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-3">
+                  <div className="flex items-center gap-2.5 border-b border-white/15 pb-3">
+                    <FileText className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                    <h3 className="text-base sm:text-lg font-bold text-white">
+                      د. ملاحظات العميل والتعليمات الخاصة
+                    </h3>
+                  </div>
+                  <div className="p-4 rounded-xl bg-[#0E0A0C] border border-white/15 text-sm text-white/90 leading-relaxed">
+                    {meta.notes || 'لا توجد ملاحظات أو تعليمات إضافية مسجلة من العميل لهذا الطلب.'}
+                  </div>
+                </section>
+
+                {/* E. الدفع والمجموع النهائي & F. إجراءات إدارة الطلب */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* E. الدفع والمجموع النهائي */}
+                  <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
+                    <div className="flex items-center gap-2.5 border-b border-white/15 pb-3">
+                      <Banknote className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        هـ. الدفع والمجموع النهائي
+                      </h3>
+                    </div>
+
+                    <div className="rounded-xl bg-[#0E0A0C] border border-white/15 p-4 space-y-3 text-sm">
+                      <div className="flex items-center justify-between text-white/85">
+                        <span>المجموع الفرعي للمنتجات</span>
+                        <span className="font-semibold text-white tabular-nums-en">
+                          {formatIqd(breakdown.productsSubtotalIqd)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-white/85">
+                        <span>أجور التوصيل</span>
+                        <span className="tabular-nums-en text-white">
+                          {breakdown.deliveryFeeIqd > 0
+                            ? formatIqd(breakdown.deliveryFeeIqd)
+                            : '0 د.ع (أو يُتفق عند التوصيل)'}
+                        </span>
+                      </div>
+                      {breakdown.discountIqd > 0 && (
+                        <div className="flex items-center justify-between text-[#F8BBD0]">
+                          <span>الخصم</span>
+                          <span className="tabular-nums-en">
+                            - {formatIqd(breakdown.discountIqd)}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-white/85">
+                        <span>طريقة الدفع</span>
+                        <span className="font-medium text-white">{meta.paymentMethod}</span>
+                      </div>
+                      <div className="pt-3 border-t border-white/15 flex items-center justify-between">
+                        <span className="text-base font-bold text-white">المبلغ النهائي المطلوب</span>
+                        <span className="text-2xl font-bold text-[#F8BBD0] tabular-nums-en">
+                          {formatIqd(breakdown.finalTotalIqd)}
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* F. إجراءات إدارة الطلب */}
+                  <section className="rounded-2xl bg-[#461221] border border-white/15 p-5 sm:p-6 space-y-4">
+                    <div className="flex items-center gap-2.5 border-b border-white/15 pb-3">
+                      <CheckCircle2 className="w-5 h-5 text-[#F48FB1] shrink-0" />
+                      <h3 className="text-base sm:text-lg font-bold text-white">
+                        و. إجراءات إدارة الطلب
+                      </h3>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="text-xs text-white/75">تحديث حالة الطلب في قاعدة البيانات:</div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {STATUS_OPTIONS.map((st) => {
+                          const isCurrent =
+                            selectedOrderModal.status === st.value ||
+                            (st.value === 'delivered' &&
+                              selectedOrderModal.status === 'completed');
+                          return (
+                            <button
+                              key={st.value}
+                              type="button"
+                              disabled={busyOrderId === selectedOrderModal.id}
+                              onClick={() => handleUpdateOrderStatus(selectedOrderModal, st.value)}
+                              className={`px-3 py-2.5 rounded-xl border text-xs sm:text-sm font-semibold transition cursor-pointer ${
+                                isCurrent
+                                  ? 'bg-[#0E0A0C] border-white text-white ring-1 ring-white/50'
+                                  : 'bg-[#5E1D2F] border-white/20 text-white/90 hover:border-white/60'
+                              }`}
+                            >
+                              {st.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-[#0E0A0C] border border-white/15 flex flex-wrap items-center justify-between gap-3">
+                      <span className="text-xs sm:text-sm text-white/85">
+                        حالة ختم الولاء: {stamped ? 'تم منح الختم ✓' : 'لم يُمنح ختم بعد'}
+                      </span>
+                      {isQualifyingCompletedStatus(selectedOrderModal.status) && !stamped && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            awardQualifyingStampForOrder(selectedOrderModal, false).then((msg) => {
+                              if (msg) {
+                                setActionMessage(msg);
+                                loadAllAdminData();
+                              }
+                            })
+                          }
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#5E1D2F] hover:bg-[#6E2438] border border-[#F48FB1] text-xs font-semibold text-white cursor-pointer"
+                        >
+                          <Award className="w-3.5 h-3.5 text-[#F48FB1]" />
+                          <span>منح ختم الولاء</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {historyForOrder.length > 0 && (
+                      <div className="p-4 rounded-xl bg-[#0E0A0C] border border-white/15 space-y-2 max-h-48 overflow-y-auto">
+                        <div className="text-xs font-semibold text-white/75">سجل تغييرات الحالة:</div>
+                        {historyForOrder.map((h) => (
+                          <div key={h.id} className="text-xs text-white/85 tabular-nums-en">
+                            {formatBaghdadDateTime(h.created_at)} —{' '}
+                            {ADMIN_STATUS_LABELS[h.new_status] ?? h.new_status}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -3118,7 +3548,11 @@ function OrdersTable({
             const isBusy = busyOrderId === order.id;
 
             return (
-              <tr key={order.id} className="align-top">
+              <tr
+                key={order.id}
+                onClick={() => onOpenDetail(order)}
+                className="align-top hover:bg-[#5E1D2F]/60 transition cursor-pointer"
+              >
                 <td className="py-3 px-3 tabular-nums-en">
                   <div className="font-semibold text-white">#{order.id.slice(0, 8)}</div>
                   <div className="text-xs text-white/70">
@@ -3141,7 +3575,10 @@ function OrdersTable({
                 <td className="py-3 px-3 font-bold text-white tabular-nums-en whitespace-nowrap">
                   {formatIqd(order.total_price_iqd)}
                 </td>
-                <td className="py-3 px-3 whitespace-nowrap">
+                <td
+                  className="py-3 px-3 whitespace-nowrap"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <select
                     value={order.status === 'completed' ? 'delivered' : order.status}
                     disabled={isBusy}
@@ -3155,14 +3592,14 @@ function OrdersTable({
                     ))}
                   </select>
                 </td>
-                <td className="py-3 px-3">
+                <td className="py-3 px-3" onClick={(e) => e.stopPropagation()}>
                   <div className="flex flex-wrap gap-1.5">
                     <button
                       type="button"
                       onClick={() => onOpenDetail(order)}
                       className="px-2.5 py-1.5 rounded-lg bg-[#0E0A0C] border border-white/25 text-xs text-white hover:bg-black cursor-pointer"
                     >
-                      عرض
+                      عرض التفاصيل
                     </button>
                     {isQualifyingCompletedStatus(order.status) && !stamped && (
                       <button

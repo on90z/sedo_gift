@@ -131,4 +131,5 @@ export interface StoreSettingsRow {
   shop_lng?: number | null;
   promo_radius_meters?: number | null;
   promo_notification_text?: string | null;
+  daily_reset_at?: string | null;
 }

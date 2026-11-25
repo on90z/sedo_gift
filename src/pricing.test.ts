@@ -9,6 +9,7 @@ import {
   DEFAULT_SHOP_LAT,
   DEFAULT_SHOP_LNG,
   extractCoordsFromMapsUrl,
+  extractOrderBreakdown,
   formatIqd,
   formatOrderDetailsText,
   formatWhatsAppUrl,
@@ -279,4 +280,105 @@ test('Haversine distance and 12-hour geofencing promo trigger rules work accurat
     }),
     { lat: 32.6111, lng: 44.0222 }
   );
+});
+
+test('Daily reset zeroes prior orders of the same Baghdad day without affecting new orders or next day', () => {
+  const orders = [
+    {
+      id: 'old-1',
+      created_at: '2026-11-25T08:00:00Z',
+      status: 'delivered',
+      total_price_iqd: 40000,
+      customer_id: 'c1',
+      customer_name: 'علي',
+      customer_phone: '07762963674',
+      customer_birth_date: null,
+      order_details: null,
+    },
+    {
+      id: 'old-2',
+      created_at: '2026-11-25T11:30:00Z',
+      status: 'pending',
+      total_price_iqd: 25000,
+      customer_id: 'c2',
+      customer_name: 'مريم',
+      customer_phone: '07733484176',
+      customer_birth_date: null,
+      order_details: null,
+    },
+    {
+      id: 'new-3',
+      created_at: '2026-11-25T13:15:00Z',
+      status: 'delivered',
+      total_price_iqd: 55000,
+      customer_id: 'c3',
+      customer_name: 'نور',
+      customer_phone: '07762963674',
+      customer_birth_date: null,
+      order_details: null,
+    },
+  ];
+
+  // Reset performed at 12:00Z (between old-2 and new-3)
+  const afterResetBeforeNew = computeDailyOrderStats(
+    orders.slice(0, 2),
+    '2026-11-25',
+    '2026-11-25T12:00:00Z'
+  );
+  assert.equal(afterResetBeforeNew.total, 0);
+  assert.equal(afterResetBeforeNew.pending, 0);
+  assert.equal(afterResetBeforeNew.delivered, 0);
+  assert.equal(afterResetBeforeNew.deliveredSalesIqd, 0);
+
+  // New order created after reset IS counted normally
+  const afterNewOrder = computeDailyOrderStats(
+    orders,
+    '2026-11-25',
+    '2026-11-25T12:00:00Z'
+  );
+  assert.equal(afterNewOrder.total, 1);
+  assert.equal(afterNewOrder.delivered, 1);
+  assert.equal(afterNewOrder.deliveredSalesIqd, 55000);
+
+  // Reset from a previous Baghdad day does NOT suppress all orders on a different day
+  const previousDayReset = computeDailyOrderStats(
+    orders,
+    '2026-11-25',
+    '2026-11-24T18:00:00Z'
+  );
+  assert.equal(previousDayReset.total, 3);
+});
+
+test('extractOrderBreakdown produces structured items, options, and totals in IQD', () => {
+  const breakdown = extractOrderBreakdown({
+    id: 'ord-1',
+    created_at: '2026-11-25T10:00:00Z',
+    status: 'confirmed',
+    total_price_iqd: 45000,
+    customer_id: 'c1',
+    customer_name: 'سارة',
+    customer_phone: '07762963674',
+    customer_birth_date: null,
+    order_details: {
+      flower_id: 'f1',
+      flower_name: 'ورد أحمر طبيعي',
+      flower_unit_price_iqd: 3000,
+      flower_count: 11,
+      flower_color: 'أحمر',
+      bouquet_shape: 'كلاسيكية دائرية',
+      wrapping_id: 'w1',
+      wrapping_name: 'تغليف فاخر مطفي',
+      wrapping_price_iqd: 5000,
+      gift_id: 'g1',
+      gift_name: 'بوكس شوكولاتة صغير',
+      gift_price_iqd: 7000,
+    },
+  });
+
+  assert.equal(breakdown.items.length, 3);
+  assert.equal(breakdown.items[0].subtotalIqd, 33000);
+  assert.equal(breakdown.productsSubtotalIqd, 45000);
+  assert.equal(breakdown.finalTotalIqd, 45000);
+  assert.equal(breakdown.flowerColor, 'أحمر');
+  assert.equal(breakdown.bouquetShape, 'كلاسيكية دائرية');
 });

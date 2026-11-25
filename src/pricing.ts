@@ -219,7 +219,8 @@ export function getBaghdadTimeFormatted(input: string | Date): string {
 
 export function computeDailyOrderStats(
   orders: OrderRow[],
-  baghdadDateKey: string
+  baghdadDateKey: string,
+  dailyResetAtIso?: string | null
 ): DailyOrderStats {
   const stats: DailyOrderStats = {
     total: 0,
@@ -232,8 +233,22 @@ export function computeDailyOrderStats(
     deliveredSalesIqd: 0,
   };
 
+  let resetThresholdMs: number | null = null;
+  if (dailyResetAtIso && getBaghdadDateKey(dailyResetAtIso) === baghdadDateKey) {
+    const parsed = new Date(dailyResetAtIso).getTime();
+    if (Number.isFinite(parsed)) {
+      resetThresholdMs = parsed;
+    }
+  }
+
   for (const order of orders) {
     if (getBaghdadDateKey(order.created_at) !== baghdadDateKey) continue;
+    if (resetThresholdMs !== null) {
+      const orderTimeMs = new Date(order.created_at).getTime();
+      if (Number.isFinite(orderTimeMs) && orderTimeMs <= resetThresholdMs) {
+        continue;
+      }
+    }
     stats.total += 1;
     switch (order.status) {
       case 'pending':
@@ -482,4 +497,130 @@ export function resolveShopCoordinates(settings: {
     lat: DEFAULT_SHOP_LAT,
     lng: DEFAULT_SHOP_LNG,
   });
+}
+
+export interface OrderLineItem {
+  key: string;
+  productId: string | null;
+  category: 'flower' | 'wrapping' | 'gift' | 'custom';
+  name: string;
+  quantity: number;
+  unitPriceIqd: number;
+  subtotalIqd: number;
+  options: string[];
+}
+
+export interface OrderFinancialBreakdown {
+  items: OrderLineItem[];
+  productsSubtotalIqd: number;
+  deliveryFeeIqd: number;
+  discountIqd: number;
+  finalTotalIqd: number;
+  flowerColor: string | null;
+  bouquetShape: string | null;
+}
+
+export function extractOrderBreakdown(order: OrderRow): OrderFinancialBreakdown {
+  const finalTotalIqd = Math.max(0, Number(order.total_price_iqd) || 0);
+  const raw =
+    typeof order.order_details === 'string'
+      ? (() => {
+          try {
+            return JSON.parse(order.order_details) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })()
+      : order.order_details && typeof order.order_details === 'object'
+      ? (order.order_details as Record<string, unknown>)
+      : null;
+
+  const items: OrderLineItem[] = [];
+  if (raw) {
+    const d = raw as Partial<BouquetOrderDetails> & {
+      delivery_fee_iqd?: number;
+      discount_iqd?: number;
+    };
+
+    if (d.flower_name) {
+      const qty = Math.max(1, Number(d.flower_count) || 1);
+      const unit = Math.max(0, Number(d.flower_unit_price_iqd) || 0);
+      const opts: string[] = [];
+      if (d.flower_color) opts.push(`اللون: ${d.flower_color}`);
+      if (d.bouquet_shape) opts.push(`الشكل: ${d.bouquet_shape}`);
+      items.push({
+        key: 'flower',
+        productId: d.flower_id ?? null,
+        category: 'flower',
+        name: d.flower_name,
+        quantity: qty,
+        unitPriceIqd: unit,
+        subtotalIqd: unit * qty,
+        options: opts,
+      });
+    }
+
+    if (d.wrapping_name && d.wrapping_name !== 'بدون تغليف') {
+      const wrapPrice = Math.max(0, Number(d.wrapping_price_iqd) || 0);
+      items.push({
+        key: 'wrapping',
+        productId: d.wrapping_id ?? null,
+        category: 'wrapping',
+        name: d.wrapping_name,
+        quantity: 1,
+        unitPriceIqd: wrapPrice,
+        subtotalIqd: wrapPrice,
+        options: ['تغليف الباقة'],
+      });
+    }
+
+    if (d.gift_name) {
+      const giftPrice = Math.max(0, Number(d.gift_price_iqd) || 0);
+      items.push({
+        key: 'gift',
+        productId: d.gift_id ?? null,
+        category: 'gift',
+        name: d.gift_name,
+        quantity: 1,
+        unitPriceIqd: giftPrice,
+        subtotalIqd: giftPrice,
+        options: ['هدية مرفقة'],
+      });
+    }
+
+    const deliveryFeeIqd = Math.max(0, Number(d.delivery_fee_iqd) || 0);
+    const discountIqd = Math.max(0, Number(d.discount_iqd) || 0);
+    const computedSubtotal = items.reduce((sum, it) => sum + it.subtotalIqd, 0);
+
+    return {
+      items,
+      productsSubtotalIqd: computedSubtotal > 0 ? computedSubtotal : finalTotalIqd,
+      deliveryFeeIqd,
+      discountIqd,
+      finalTotalIqd,
+      flowerColor: d.flower_color ?? null,
+      bouquetShape: d.bouquet_shape ?? null,
+    };
+  }
+
+  return {
+    items: [
+      {
+        key: 'custom',
+        productId: null,
+        category: 'custom',
+        name: formatOrderDetailsText(order.order_details),
+        quantity: 1,
+        unitPriceIqd: finalTotalIqd,
+        subtotalIqd: finalTotalIqd,
+        options: [],
+      },
+    ],
+    productsSubtotalIqd: finalTotalIqd,
+    deliveryFeeIqd: 0,
+    discountIqd: 0,
+    finalTotalIqd,
+    flowerColor: null,
+    bouquetShape: null,
+  };
 }
